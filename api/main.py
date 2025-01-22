@@ -20,3 +20,12 @@ def get_item(item_id: str):
 def put_item(item: dict):
     table.put_item(Item=item)
     return {"success": True, "item": item}
+
+
+@app.post("/test-post")
+def test_post(int: int):
+    return {"success": True, "message": "Test Post", "int": int}
+
+@app.get("/test-get")
+def test_get():
+    return {"success": True, "message": "Test Get"}
