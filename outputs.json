@@ -1,0 +1,7 @@
+{
+  "FastapiDynamodbLambdaStack": {
+    "CustomDomainUrl": "https://api.fast.adamsulemanji.com/",
+    "ApiUrl": "https://jly0h9bcw8.execute-api.us-east-1.amazonaws.com/prod/",
+    "FastApiGatewayEndpointE3DF2069": "https://jly0h9bcw8.execute-api.us-east-1.amazonaws.com/prod/"
+  }
+}

@@ -10,8 +10,14 @@ from mangum import Mangum
 app = FastAPI()
 handler = Mangum(app)
 
+# Determine if the environment is production or development
+is_production = os.environ.get("ENV", "dev") == "prod"
 
-table_name = os.environ.get("TABLE_NAME", "MyTable")
+if is_production:
+    table_name = os.environ.get("TABLE_NAME", "ProdTable")
+else:
+    table_name = os.environ.get("TABLE_NAME", "DevTable")
+
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(table_name)
 

@@ -8,5 +8,8 @@ RUN pip install -r requirements.txt --target /var/task/
 # Copy your FastAPI application code
 COPY main.py ./
 
+# Set environment variable for development
+ENV ENV=dev
+
 # Set the CMD to your handler
 CMD [ "main.handler" ]
