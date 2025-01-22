@@ -43,7 +43,7 @@ digraph "Diagram" {
       "FastapiDynamodbLambdaStack/MyTable" [
         label = " MyTable",
         fontsize = 12,
-        image = "/Users/adamsulemanji/.nvm/versions/node/v20.12.2/lib/node_modules/cdk-dia/icons/aws/Service/Arch_Database/64/Arch_Amazon-DynamoDB_64@5x.png",
+        image = "/Users/adamsulemanji/Desktop/College/PROJECTS/fastapi-dynamodb-lambda/node_modules/cdk-dia/icons/aws/Service/Arch_Database/64/Arch_Amazon-DynamoDB_64@5x.png",
         imagescale = "true",
         imagepos = "tc",
         penwidth = "0",
@@ -56,7 +56,7 @@ digraph "Diagram" {
       "FastapiDynamodbLambdaStack/FastApiFunction" [
         label = " FastApiFunction",
         fontsize = 12,
-        image = "/Users/adamsulemanji/.nvm/versions/node/v20.12.2/lib/node_modules/cdk-dia/icons/aws/Service/Arch_Compute/64/Arch_AWS-Lambda_64@5x.png",
+        image = "/Users/adamsulemanji/Desktop/College/PROJECTS/fastapi-dynamodb-lambda/node_modules/cdk-dia/icons/aws/Service/Arch_Compute/64/Arch_AWS-Lambda_64@5x.png",
         imagescale = "true",
         imagepos = "tc",
         penwidth = "0",
@@ -69,7 +69,7 @@ digraph "Diagram" {
       "FastapiDynamodbLambdaStack/FastApiGateway" [
         label = " FastApiGateway",
         fontsize = 12,
-        image = "/Users/adamsulemanji/.nvm/versions/node/v20.12.2/lib/node_modules/cdk-dia/icons/aws/Service/Arch_Networking-Content/64/Arch_Amazon-API-Gateway_64@5x.png",
+        image = "/Users/adamsulemanji/Desktop/College/PROJECTS/fastapi-dynamodb-lambda/node_modules/cdk-dia/icons/aws/Service/Arch_Networking-Content/64/Arch_Amazon-API-Gateway_64@5x.png",
         imagescale = "true",
         imagepos = "tc",
         penwidth = "0",
