@@ -27,6 +27,11 @@ class MealInfo(BaseModel):
         json_encoders = { datetime: lambda dt: dt.isoformat() }
 
 
+@app.get("/")
+def read_root():
+    return {"Hello": "World"}
+
+
 @app.get("/meals/{mealID}")
 def get_item(item_id: str):
     response = table.get_item(Key={"mealID": item_id})
