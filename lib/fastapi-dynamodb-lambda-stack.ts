@@ -11,8 +11,7 @@ import * as path from "path";
 
 export class FastapiDynamodbLambdaStack extends cdk.Stack {
 	constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
-
+		super(scope, id, props);
 
 		const table_dev = new dynamodb.Table(this, "MyTableDev", {
 			tableName: "MyTable-dev",
@@ -20,7 +19,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 				name: "mealID",
 				type: dynamodb.AttributeType.STRING,
 			},
-			removalPolicy: RemovalPolicy.DESTROY, 
+			removalPolicy: RemovalPolicy.DESTROY,
 		});
 
 		const table_prod = new dynamodb.Table(this, "MyTableProd", {
@@ -47,25 +46,24 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 			}
 		);
 
-    table_prod.grantReadWriteData(fastApiLambda_prod);
-    
-    const fastApiLambda_dev = new lambda.DockerImageFunction(
-      this,
-      "FastApiFunctionDev",
-      {
-        code: lambda.DockerImageCode.fromImageAsset(
-          path.join(__dirname, "../api")
-        ),
-        memorySize: 512,
-        timeout: cdk.Duration.seconds(30),
-        environment: {
-          TABLE_NAME: table_dev.tableName,
-        },
-      }
-    );
+		table_prod.grantReadWriteData(fastApiLambda_prod);
 
-    table_dev.grantReadWriteData(fastApiLambda_dev);
+		const fastApiLambda_dev = new lambda.DockerImageFunction(
+			this,
+			"FastApiFunctionDev",
+			{
+				code: lambda.DockerImageCode.fromImageAsset(
+					path.join(__dirname, "../api")
+				),
+				memorySize: 512,
+				timeout: cdk.Duration.seconds(30),
+				environment: {
+					TABLE_NAME: table_dev.tableName,
+				},
+			}
+		);
 
+		table_dev.grantReadWriteData(fastApiLambda_dev);
 
 		const api_prod = new apigateway.LambdaRestApi(this, "FastApiGateway", {
 			handler: fastApiLambda_prod,
@@ -74,12 +72,16 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 				"APIGateway for FastAPI Lambda DDB docker image test service",
 		});
 
-    const api_dev = new apigateway.LambdaRestApi(this, "FastApiGatewayDev", {
-      handler: fastApiLambda_dev,
-      proxy: true,
-      description:
-        "APIGateway for FastAPI Lambda DDB docker image test service",
-    });
+		const api_dev = new apigateway.LambdaRestApi(
+			this,
+			"FastApiGatewayDev",
+			{
+				handler: fastApiLambda_dev,
+				proxy: true,
+				description:
+					"APIGateway for FastAPI Lambda DDB docker image test service",
+			}
+		);
 
 		// --- The Custom Domain logic here would typically only be for 'prod' ---
 		// But you can parameterize that as well, or skip it in dev.
@@ -128,9 +130,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 			description: "Default Invoke URL for the FastAPI service",
 		});
 
-    new cdk.CfnOutput(this, "ApiUrlDev", {
-      value: api_dev.url,
-      description: "Default Invoke URL for the FastAPI service",
-    });
-  }
+		new cdk.CfnOutput(this, "ApiUrlDev", {
+			value: api_dev.url,
+			description: "Default Invoke URL for the FastAPI service",
+		});
+	}
 }
