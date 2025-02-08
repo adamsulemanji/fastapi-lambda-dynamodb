@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from typing import List
-from app.schemas.meals import MealInfo
-from app.services.meals import (
+from schemas.meals import MealInfo
+from services.meals import (
     get_meal,
     create_meal,
     update_meal,

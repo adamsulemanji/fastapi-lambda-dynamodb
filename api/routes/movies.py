@@ -1,0 +1,23 @@
+from fastapi import APIRouter, HTTPException
+from typing import List
+from schemas.movies import (
+    MoviesSearch, 
+    MovieResult
+)
+
+from services.movies import (
+    get_movies,
+)
+    
+router = APIRouter()
+
+
+@router.post("/search", response_model=List[MovieResult])
+def search_movies(search: MoviesSearch):
+    return get_movies(search)
+
+
+@router.post("/search")
+def post_movies(search: MoviesSearch):
+    return post_movies(search)
+

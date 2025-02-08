@@ -2,3 +2,5 @@ fastapi
 mangum
 boto3
 uvicorn
+bs4
+requests

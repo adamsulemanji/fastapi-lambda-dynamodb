@@ -1,8 +1,10 @@
+
+import os
 import uuid
 import boto3
 from datetime import datetime
 from typing import List, Optional
-from app.schemas.meals import MealInfo
+from schemas.meals import MealInfo
 from fastapi import HTTPException
 
 table_name = os.environ.get("TABLE_NAME", "MyTable")
