@@ -6,7 +6,7 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt --target /var/task/
 
 # Copy your FastAPI application code
-COPY main.py ./
+COPY . .
 
 # Set the CMD to your handler
 CMD [ "main.handler" ]
