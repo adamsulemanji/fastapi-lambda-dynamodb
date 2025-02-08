@@ -31,6 +31,15 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 			removalPolicy: RemovalPolicy.RETAIN,
 		});
 
+		const table_movies = new dynamodb.Table(this, "MoviesTable", {
+			tableName: "movies",
+			partitionKey: {
+				name: "username",
+				type: dynamodb.AttributeType.STRING,
+			},
+			removalPolicy: RemovalPolicy.RETAIN,
+		});
+
 		const fastApiLambda_prod = new lambda.DockerImageFunction(
 			this,
 			"FastApiFunction",
