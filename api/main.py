@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from mangum import Mangum
+from fastapi.middleware.cors import CORSMiddleware
 from routes import meals, movies
 
 app = FastAPI(title="Meals & Movies API")
