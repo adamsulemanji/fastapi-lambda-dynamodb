@@ -17,7 +17,4 @@ def search_movies(search: MoviesSearch):
     return get_movies(search)
 
 
-@router.post("/search")
-def post_movies(search: MoviesSearch):
-    return post_movies(search)
 
