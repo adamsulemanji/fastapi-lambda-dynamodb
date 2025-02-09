@@ -5,12 +5,26 @@ from routes import meals, movies
 
 app = FastAPI(title="Meals & Movies API")
 
-origins = ["*"]
+origins = [
+    "https://adamsulemanji.com",
+    "https://adamsulemanji.com/",
+
+    "https://api.fast.adamsulemanji.com",
+    "https://api.fast.adamsulemanji.com/",
+
+    "http://localhost:8000",
+    "http://localhost:8000/",
+
+    "http://localhost:3000",
+    "http://localhost:3000/",
+
+    "https://www.adamsulemanji.com",
+    "https://www.adamsulemanji.com/",
+]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

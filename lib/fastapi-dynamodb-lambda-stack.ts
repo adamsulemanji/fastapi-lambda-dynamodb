@@ -56,6 +56,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 		);
 
 		table_prod.grantReadWriteData(fastApiLambda_prod);
+		table_movies.grantReadWriteData(fastApiLambda_prod);
 
 		const fastApiLambda_dev = new lambda.DockerImageFunction(
 			this,
@@ -73,6 +74,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 		);
 
 		table_dev.grantReadWriteData(fastApiLambda_dev);
+		table_movies.grantReadWriteData(fastApiLambda_dev);
 
 		const api_prod = new apigateway.LambdaRestApi(this, "FastApiGateway", {
 			handler: fastApiLambda_prod,
