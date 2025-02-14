@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from mangum import Mangum
 from fastapi.middleware.cors import CORSMiddleware
-from routes import meals, movies
+from routes import meals, movies, base
 
 app = FastAPI(title="Meals & Movies API")
 
@@ -31,5 +31,6 @@ app.add_middleware(
 
 app.include_router(meals.router, prefix="/meals", tags=["Meals"])
 app.include_router(movies.router, prefix="/movies", tags=["Movies"])
+app.include_router(base.router, tags=["Base"])
 
 handler = Mangum(app)
