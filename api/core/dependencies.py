@@ -10,29 +10,26 @@ import logging
 
 from core.aws_cognito import AWS_Cognito, AWS_COGNITO_USER_POOL_ID, AWS_REGION_NAME
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer()
 
-# AWS Cognito client dependency
+
 def get_aws_cognito():
     return AWS_Cognito()
 
-# Cache for Cognito JWKS (JSON Web Key Set)
+
 _jwks_cache = None
 _jwks_cache_timestamp = 0
-_JWKS_CACHE_TIMEOUT = 300  # 5 minutes
+_JWKS_CACHE_TIMEOUT = 300 
 
 def get_cognito_jwks():
     global _jwks_cache, _jwks_cache_timestamp
     current_time = time.time()
     
-    # Check if cache needs refreshing
     if _jwks_cache is None or (current_time - _jwks_cache_timestamp) > _JWKS_CACHE_TIMEOUT:
         logger.info("Refreshing Cognito JWKS cache")
-        # Get the JSON Web Key Set from AWS Cognito
         keys_url = f'https://cognito-idp.{AWS_REGION_NAME}.amazonaws.com/{AWS_COGNITO_USER_POOL_ID}/.well-known/jwks.json'
         
         try:
@@ -63,7 +60,6 @@ def verify_token(token):
             detail="Invalid token header"
         )
     
-    # Find the key that matches the kid in the token header
     rsa_key = {}
     for key in jwks['keys']:
         if key['kid'] == header['kid']:

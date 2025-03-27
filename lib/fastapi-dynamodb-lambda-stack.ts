@@ -9,7 +9,7 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { ApiGatewayDomain } from "aws-cdk-lib/aws-route53-targets";
 import * as path from "path";
 import * as cognito from "aws-cdk-lib/aws-cognito";
-import * as iam from "aws-cdk-lib/aws-iam"; // Add IAM import
+import * as iam from "aws-cdk-lib/aws-iam";
 
 export class FastapiDynamodbLambdaStack extends cdk.Stack {
 	constructor(scope: Construct, id: string, props?: cdk.StackProps) {

@@ -15,7 +15,7 @@ docker run \
   -e TABLE_NAME="MyTable-dev" \
   -v ~/.aws:/root/.aws:ro \
   -e AWS_PROFILE=default \
-  -e AWS_DEFAULT_REGION=us-east-1 \
+  -e AWS_REGION_NAME=us-east-1 \
   -e AWS_COGNITO_APP_CLIENT_ID=6ib0lefeskn33ugk4nc08uqtt7 \
   -e AWS_COGNITO_USER_POOL_ID=us-east-1_ETXEnpSV3 \
   fastapi-local

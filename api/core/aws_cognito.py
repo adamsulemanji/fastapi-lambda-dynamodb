@@ -11,13 +11,22 @@ from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, User
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# AWS_REGION_NAME = os.getenv("AWS_REGION_NAME")
-# AWS_COGNITO_APP_CLIENT_ID = os.getenv("AWS_COGNITO_APP_CLIENT_ID")
-# AWS_COGNITO_USER_POOL_ID = os.getenv("AWS_COGNITO_USER_POOL_ID")
+AWS_REGION_NAME = os.getenv("AWS_REGION_NAME")
+AWS_COGNITO_APP_CLIENT_ID = os.getenv("AWS_COGNITO_APP_CLIENT_ID")
+AWS_COGNITO_USER_POOL_ID = os.getenv("AWS_COGNITO_USER_POOL_ID")
 
-AWS_REGION_NAME = "us-east-1"
-AWS_COGNITO_APP_CLIENT_ID = "6ib0lefeskn33ugk4nc08uqtt7"
-AWS_COGNITO_USER_POOL_ID = "us-east-1_ETXEnpSV3"
+# Improved error message with more specific troubleshooting hints
+missing_vars = []
+if not AWS_REGION_NAME: missing_vars.append("AWS_REGION_NAME")
+if not AWS_COGNITO_APP_CLIENT_ID: missing_vars.append("AWS_COGNITO_APP_CLIENT_ID")
+if not AWS_COGNITO_USER_POOL_ID: missing_vars.append("AWS_COGNITO_USER_POOL_ID")
+
+if missing_vars:
+    error_msg = f"AWS Cognito configuration missing: {', '.join(missing_vars)}. "
+    error_msg += "For local development, please provide these in your docker run command. "
+    error_msg += "For production, ensure they are set in the Lambda environment variables."
+    logger.error(error_msg)
+    raise ValueError(error_msg)
 
 
 class AWS_Cognito:
