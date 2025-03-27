@@ -3,7 +3,7 @@ from mangum import Mangum
 from fastapi.middleware.cors import CORSMiddleware
 from routes import meals, movies, base, auth
 
-app = FastAPI(title="Meals & Movies API")
+app = FastAPI(title="Meals, Movies, Cognito API")
 
 origins = [
     "https://adamsulemanji.com",

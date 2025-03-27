@@ -8,7 +8,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { ApiGatewayDomain } from "aws-cdk-lib/aws-route53-targets";
 import * as path from "path";
-import * as cognito from "aws-cdk-lib/aws-cognito"; // Add this import
+import * as cognito from "aws-cdk-lib/aws-cognito";
 
 export class FastapiDynamodbLambdaStack extends cdk.Stack {
 	constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -76,7 +76,12 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 			"FastApiFunction",
 			{
 				code: lambda.DockerImageCode.fromImageAsset(
-					path.join(__dirname, "../api")
+					path.join(__dirname, "../api"),
+					{
+						buildArgs: {
+							"--platform": "linux/amd64"
+						}
+					}
 				),
 				memorySize: 512,
 				timeout: cdk.Duration.seconds(30),
@@ -85,7 +90,8 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 					AWS_REGION_NAME: this.region,
 					AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
 					AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
-				},
+					},
+				architecture: lambda.Architecture.X86_64,
 			}
 		);
 
@@ -97,7 +103,12 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 			"FastApiFunctionDev",
 			{
 				code: lambda.DockerImageCode.fromImageAsset(
-					path.join(__dirname, "../api")
+					path.join(__dirname, "../api"),
+					{
+						buildArgs: {
+							"--platform": "linux/amd64"
+						}
+					}
 				),
 				memorySize: 512,
 				timeout: cdk.Duration.seconds(30),
@@ -106,7 +117,8 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 					AWS_REGION_NAME: this.region,
 					AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
 					AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
-				},
+					},
+				architecture: lambda.Architecture.X86_64,
 			}
 		);
 

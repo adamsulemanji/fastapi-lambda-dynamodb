@@ -1,14 +1,18 @@
+import os
 import boto3
 from pydantic import EmailStr
 
 
-from ..schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify
-from .config import env_vars
+from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify
 
+
+# AWS_REGION_NAME = os.getenv("AWS_REGION_NAME")
+# AWS_COGNITO_APP_CLIENT_ID = os.getenv("AWS_COGNITO_APP_CLIENT_ID")
+# AWS_COGNITO_USER_POOL_ID = os.getenv("AWS_COGNITO_USER_POOL_ID")
 
 AWS_REGION_NAME = "us-east-1"
-AWS_COGNITO_APP_CLIENT_ID = "3le5isv0lr9th52o7lvva1p1ih"
-AWS_COGNITO_USER_POOL_ID = "us-east-1_tQOjzQocV"
+AWS_COGNITO_APP_CLIENT_ID = "6ib0lefeskn33ugk4nc08uqtt7"
+AWS_COGNITO_USER_POOL_ID = "us-east-1_ETXEnpSV3"
 
 
 class AWS_Cognito:
@@ -119,4 +123,4 @@ class AWS_Cognito:
             AccessToken = access_token
         )
 
-        return response        
+        return response

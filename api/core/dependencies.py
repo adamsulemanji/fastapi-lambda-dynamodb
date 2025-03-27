@@ -1,4 +1,4 @@
-from .aws_cognito import AWS_Cognito
+from core.aws_cognito import AWS_Cognito
 
 
 def get_aws_cognito() -> AWS_Cognito:

@@ -4,8 +4,8 @@ import botocore
 from pydantic import EmailStr
 
 
-from ..core.aws_cognito import AWS_Cognito
-from ..schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify
+from core.aws_cognito import AWS_Cognito
+from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify
 
 
 class AuthService:

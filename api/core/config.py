@@ -8,8 +8,6 @@ class Settings(BaseSettings):
     AWS_COGNITO_APP_CLIENT_ID: str
     AWS_COGNITO_USER_POOL_ID: str
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
 
 @lru_cache
 def get_settings():

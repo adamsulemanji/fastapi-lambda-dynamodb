@@ -2,5 +2,8 @@
   "hosted-zone:account=869935106890:domainName=adamsulemanji.com:region=us-east-1": {
     "Id": "/hostedzone/Z00592542LWQ70ZM4V3HA",
     "Name": "adamsulemanji.com."
-  }
+  },
+  "acknowledged-issue-numbers": [
+    32775
+  ]
 }
