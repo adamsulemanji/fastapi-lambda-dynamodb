@@ -1,23 +1,31 @@
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 import botocore
+import logging
 from pydantic import EmailStr
 
 
 from core.aws_cognito import AWS_Cognito
 from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class AuthService:
     def user_signup(user: UserSignup, cognito: AWS_Cognito):
         try:
             response = cognito.user_signup(user)
         except botocore.exceptions.ClientError as e:
+            logger.error(f"AWS Cognito error in user_signup: {str(e)}")
             if e.response['Error']['Code'] == 'UsernameExistsException':
                 raise HTTPException(
                     status_code=409, detail="An account with the given email already exists")
             else:
-                raise HTTPException(status_code=500, detail="Internal Server")
+                raise HTTPException(status_code=500, detail=f"AWS Cognito error: {e.response['Error']['Message']}")
+        except Exception as e:
+            logger.error(f"Unexpected error in user_signup: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
         else:
             if response['ResponseMetadata']['HTTPStatusCode'] == 200:
                 content = {

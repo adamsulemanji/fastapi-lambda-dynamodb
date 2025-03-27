@@ -10,7 +10,6 @@ class UserSignup(BaseModel):
     email: EmailStr
     phone_number: Annotated[str, MinLen(10)]
     password: Annotated[str, MinLen(8)]
-    role: str
 
 
 class UserVerify(BaseModel):

@@ -9,6 +9,7 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { ApiGatewayDomain } from "aws-cdk-lib/aws-route53-targets";
 import * as path from "path";
 import * as cognito from "aws-cdk-lib/aws-cognito";
+import * as iam from "aws-cdk-lib/aws-iam"; // Add IAM import
 
 export class FastapiDynamodbLambdaStack extends cdk.Stack {
 	constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -41,7 +42,6 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 			removalPolicy: RemovalPolicy.RETAIN,
 		});
 
-		// Create a Cognito User Pool
 		const userPool = new cognito.UserPool(this, "UserPool", {
 			selfSignUpEnabled: true,
 			autoVerify: { email: true },
@@ -58,10 +58,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 				requireDigits: true,
 				requireSymbols: true,
 			},
-			removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN for production
+			removalPolicy: RemovalPolicy.DESTROY,
 		});
 
-		// Create a User Pool Client
 		const userPoolClient = new cognito.UserPoolClient(this, "UserPoolClient", {
 			userPool,
 			authFlows: {
@@ -69,6 +68,22 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 				userSrp: true,
 			},
 			generateSecret: false,
+		});
+
+		const cognitoPolicy = new iam.PolicyStatement({
+			effect: iam.Effect.ALLOW,
+			actions: [
+				"cognito-idp:ListUserPools",
+				"cognito-idp:DescribeUserPool",
+				"cognito-idp:ListUsers",
+				"cognito-idp:AdminGetUser",
+				"cognito-idp:AdminInitiateAuth",
+				"cognito-idp:AdminCreateUser",
+				"cognito-idp:AdminSetUserPassword",
+				"cognito-idp:AdminUpdateUserAttributes",
+				"cognito-idp:AdminDeleteUser"
+			],
+			resources: ["*"]
 		});
 
 		const fastApiLambda_prod = new lambda.DockerImageFunction(
@@ -94,6 +109,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 				architecture: lambda.Architecture.X86_64,
 			}
 		);
+
+		// Add Cognito permissions to prod Lambda
+		fastApiLambda_prod.addToRolePolicy(cognitoPolicy);
 
 		table_prod.grantReadWriteData(fastApiLambda_prod);
 		table_movies.grantReadWriteData(fastApiLambda_prod);
@@ -121,6 +139,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 				architecture: lambda.Architecture.X86_64,
 			}
 		);
+
+		// Add Cognito permissions to dev Lambda
+		fastApiLambda_dev.addToRolePolicy(cognitoPolicy);
 
 		table_dev.grantReadWriteData(fastApiLambda_dev);
 		table_movies.grantReadWriteData(fastApiLambda_dev);

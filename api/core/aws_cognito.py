@@ -1,10 +1,15 @@
 import os
 import boto3
+import logging
 from pydantic import EmailStr
 
 
 from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify
 
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # AWS_REGION_NAME = os.getenv("AWS_REGION_NAME")
 # AWS_COGNITO_APP_CLIENT_ID = os.getenv("AWS_COGNITO_APP_CLIENT_ID")
@@ -17,31 +22,43 @@ AWS_COGNITO_USER_POOL_ID = "us-east-1_ETXEnpSV3"
 
 class AWS_Cognito:
     def __init__(self):
-        self.client = boto3.client("cognito-idp", region_name=AWS_REGION_NAME)
+        try:
+            logger.info(f"Initializing AWS Cognito client with region: {AWS_REGION_NAME}")
+            self.client = boto3.client("cognito-idp", region_name=AWS_REGION_NAME)
+            # Test the client connection
+            self.client.list_user_pools(MaxResults=1)
+            logger.info("Successfully initialized AWS Cognito client")
+        except Exception as e:
+            logger.error(f"Failed to initialize AWS Cognito client: {str(e)}")
+            raise
 
     def user_signup(self, user: UserSignup):
-
-        response = self.client.sign_up(
-            ClientId=AWS_COGNITO_APP_CLIENT_ID,
-            Username=user.email,
-            Password=user.password,
-            UserAttributes=[
-                {
-                    'Name': 'name',
-                    'Value': user.full_name,
-                },
-                {
-                    'Name': 'phone_number',
-                    'Value': user.phone_number
-                },
-                {
-                    'Name': 'custom:role',
-                    'Value': user.role
-                }
-            ],
-        )
-
-        return response
+        try:
+            logger.info(f"Attempting user signup for email: {user.email}")
+            response = self.client.sign_up(
+                ClientId=AWS_COGNITO_APP_CLIENT_ID,
+                Username=user.email,
+                Password=user.password,
+                UserAttributes=[
+                    {
+                        'Name': 'name',
+                        'Value': user.full_name,
+                    },
+                    {
+                        'Name': 'phone_number',
+                        'Value': user.phone_number
+                    },
+                    {
+                        'Name': 'email',
+                        'Value': user.email
+                    },
+                ],
+            )
+            logger.info(f"Successfully signed up user: {user.email}")
+            return response
+        except Exception as e:
+            logger.error(f"Failed to sign up user {user.email}: {str(e)}")
+            raise
 
     def verify_account(self, data: UserVerify):
         response = self.client.confirm_sign_up(
