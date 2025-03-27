@@ -4,7 +4,7 @@ import logging
 from pydantic import EmailStr
 
 
-from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify
+from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify, PhoneVerify
 
 
 # Configure logging
@@ -141,3 +141,70 @@ class AWS_Cognito:
         )
 
         return response
+
+    def verify_phone_number(self, user_email: EmailStr):
+        """
+        Request verification code for phone number
+        """
+        try:
+            response = self.client.get_user_attribute_verification_code(
+                AccessToken=self.get_admin_access_token(user_email),
+                AttributeName='phone_number'
+            )
+            logger.info(f"Phone verification code sent for user: {user_email}")
+            return response
+        except Exception as e:
+            logger.error(f"Failed to send phone verification code for {user_email}: {str(e)}")
+            raise
+
+    def confirm_phone_verification(self, data: PhoneVerify):
+        """
+        Verify phone number with the confirmation code
+        """
+        try:
+            response = self.client.verify_user_attribute(
+                AccessToken=self.get_admin_access_token(data.email),
+                AttributeName='phone_number',
+                Code=data.verification_code
+            )
+            logger.info(f"Phone number verified for user: {data.email}")
+            return response
+        except Exception as e:
+            logger.error(f"Failed to verify phone number for {data.email}: {str(e)}")
+            raise
+            
+    def get_admin_access_token(self, email: EmailStr):
+        """
+        Get an access token for the user (for admin operations)
+        This is a helper function for phone verification
+        In production, you would use the user's own token
+        """
+        try:
+            # In a real implementation, this should use the user's actual access token
+            # This is a simplified version for demonstration
+            response = self.client.admin_initiate_auth(
+                UserPoolId=AWS_COGNITO_USER_POOL_ID,
+                ClientId=AWS_COGNITO_APP_CLIENT_ID,
+                AuthFlow='ADMIN_NO_SRP_AUTH',
+                AuthParameters={
+                    'USERNAME': email,
+                    'PASSWORD': 'temporary_password'  # This is for demo only
+                }
+            )
+            return response['AuthenticationResult']['AccessToken']
+        except Exception as e:
+            logger.error(f"Failed to get admin access token for {email}: {str(e)}")
+            raise
+            
+    def get_user_info_from_token(self, access_token: str):
+        """
+        Get user information from an access token
+        """
+        try:
+            response = self.client.get_user(
+                AccessToken=access_token
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Failed to get user info from token: {str(e)}")
+            raise

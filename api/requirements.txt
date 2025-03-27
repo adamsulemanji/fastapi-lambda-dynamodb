@@ -5,3 +5,5 @@ uvicorn
 bs4
 requests
 pydantic[email]
+jose
+python-jose

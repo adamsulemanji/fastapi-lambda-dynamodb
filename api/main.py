@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from mangum import Mangum
 from fastapi.middleware.cors import CORSMiddleware
-from routes import meals, movies, base, auth
+from routes import meals, movies, base, auth, protected
 
 app = FastAPI(title="Meals, Movies, Cognito API")
 
@@ -29,6 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(protected.router, prefix="/protected", tags=["Protected"])
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(meals.router, prefix="/meals", tags=["Meals"])
 app.include_router(movies.router, prefix="/movies", tags=["Movies"])

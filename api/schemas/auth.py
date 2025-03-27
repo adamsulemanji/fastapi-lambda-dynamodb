@@ -40,3 +40,8 @@ class RefreshToken(BaseModel):
 
 class AccessToken(BaseModel):
     access_token: str
+
+
+class PhoneVerify(BaseModel):
+    email: EmailStr
+    verification_code: Annotated[str, MinLen(6), MaxLen(6)]

@@ -1,11 +1,11 @@
-from fastapi import APIRouter, status, Depends
+from fastapi import APIRouter, status, Depends, HTTPException
 from pydantic import EmailStr
 
 
-from schemas.auth import AccessToken, ChangePassword, ConfirmForgotPassword, RefreshToken, UserSignin, UserSignup, UserVerify
+from schemas.auth import AccessToken, ChangePassword, ConfirmForgotPassword, PhoneVerify, RefreshToken, UserSignin, UserSignup, UserVerify
 from services.auth import AuthService
 from core.aws_cognito import AWS_Cognito
-from core.dependencies import get_aws_cognito
+from core.dependencies import get_aws_cognito, get_current_user
 
 
 router = APIRouter()
@@ -75,3 +75,26 @@ async def logout(access_token: AccessToken, cognito: AWS_Cognito = Depends(get_a
 @router.get('/user_details', status_code=status.HTTP_200_OK, tags=["Auth"])
 async def user_details(email: EmailStr, cognito: AWS_Cognito = Depends(get_aws_cognito)):
     return AuthService.user_details(email, cognito)
+
+
+# PHONE VERIFICATION
+@router.post('/request_phone_verification', status_code=status.HTTP_200_OK, tags=["Auth"])
+async def request_phone_verification(email: EmailStr, cognito: AWS_Cognito = Depends(get_aws_cognito)):
+    return AuthService.request_phone_verification(email, cognito)
+
+@router.post('/confirm_phone_verification', status_code=status.HTTP_200_OK, tags=["Auth"])
+async def confirm_phone_verification(data: PhoneVerify, cognito: AWS_Cognito = Depends(get_aws_cognito)):
+    return AuthService.confirm_phone_verification(data, cognito)
+
+
+# PROTECTED ROUTE EXAMPLE
+@router.get('/protected', status_code=status.HTTP_200_OK, tags=["Protected"])
+async def protected_route(current_user: dict = Depends(get_current_user)):
+    """
+    This is an example of a protected route that requires authentication.
+    The get_current_user dependency will validate the JWT token and extract user information.
+    """
+    return {
+        "message": "You've accessed a protected route",
+        "user_info": current_user
+    }

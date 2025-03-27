@@ -6,7 +6,7 @@ from pydantic import EmailStr
 
 
 from core.aws_cognito import AWS_Cognito
-from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify
+from schemas.auth import ChangePassword, ConfirmForgotPassword, PhoneVerify, UserSignin, UserSignup, UserVerify
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -192,6 +192,50 @@ class AuthService:
                 raise HTTPException(status_code=500, detail="Internal Server")
         else:
             return
+
+    def request_phone_verification(email: EmailStr, cognito: AWS_Cognito):
+        try:
+            response = cognito.verify_phone_number(email)
+        except botocore.exceptions.ClientError as e:
+            logger.error(f"AWS Cognito error in request_phone_verification: {str(e)}")
+            if e.response['Error']['Code'] == 'UserNotFoundException':
+                raise HTTPException(
+                    status_code=404, detail="User does not exist")
+            elif e.response['Error']['Code'] == 'InvalidParameterException':
+                raise HTTPException(
+                    status_code=400, detail="Invalid phone number format")
+            elif e.response['Error']['Code'] == 'LimitExceededException':
+                raise HTTPException(
+                    status_code=429, detail="Too many verification attempts, please try again later")
+            else:
+                raise HTTPException(status_code=500, detail=f"AWS Cognito error: {e.response['Error']['Message']}")
+        except Exception as e:
+            logger.error(f"Unexpected error in request_phone_verification: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+        else:
+            return JSONResponse(content={"message": "Phone verification code sent successfully"}, status_code=200)
+            
+    def confirm_phone_verification(data: PhoneVerify, cognito: AWS_Cognito):
+        try:
+            response = cognito.confirm_phone_verification(data)
+        except botocore.exceptions.ClientError as e:
+            logger.error(f"AWS Cognito error in confirm_phone_verification: {str(e)}")
+            if e.response['Error']['Code'] == 'CodeMismatchException':
+                raise HTTPException(
+                    status_code=400, detail="The provided code does not match the expected value.")
+            elif e.response['Error']['Code'] == 'ExpiredCodeException':
+                raise HTTPException(
+                    status_code=400, detail="The provided code has expired.")
+            elif e.response['Error']['Code'] == 'UserNotFoundException':
+                raise HTTPException(
+                    status_code=404, detail="User not found")
+            else:
+                raise HTTPException(status_code=500, detail=f"AWS Cognito error: {e.response['Error']['Message']}")
+        except Exception as e:
+            logger.error(f"Unexpected error in confirm_phone_verification: {str(e)}")
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+        else:
+            return JSONResponse(content={"message": "Phone number verification successful"}, status_code=200)
 
     def user_details(email: EmailStr, cognito: AWS_Cognito):
         try:
