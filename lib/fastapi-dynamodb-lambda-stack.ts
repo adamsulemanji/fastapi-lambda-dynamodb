@@ -8,6 +8,7 @@ import * as route53 from "aws-cdk-lib/aws-route53";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { ApiGatewayDomain } from "aws-cdk-lib/aws-route53-targets";
 import * as path from "path";
+import * as cognito from "aws-cdk-lib/aws-cognito"; // Add this import
 
 export class FastapiDynamodbLambdaStack extends cdk.Stack {
 	constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -40,6 +41,36 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 			removalPolicy: RemovalPolicy.RETAIN,
 		});
 
+		// Create a Cognito User Pool
+		const userPool = new cognito.UserPool(this, "UserPool", {
+			selfSignUpEnabled: true,
+			autoVerify: { email: true },
+			standardAttributes: {
+				email: {
+					required: true,
+					mutable: true,
+				},
+			},
+			passwordPolicy: {
+				minLength: 8,
+				requireLowercase: true,
+				requireUppercase: true,
+				requireDigits: true,
+				requireSymbols: true,
+			},
+			removalPolicy: RemovalPolicy.DESTROY, // Use RETAIN for production
+		});
+
+		// Create a User Pool Client
+		const userPoolClient = new cognito.UserPoolClient(this, "UserPoolClient", {
+			userPool,
+			authFlows: {
+				userPassword: true,
+				userSrp: true,
+			},
+			generateSecret: false,
+		});
+
 		const fastApiLambda_prod = new lambda.DockerImageFunction(
 			this,
 			"FastApiFunction",
@@ -51,6 +82,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 				timeout: cdk.Duration.seconds(30),
 				environment: {
 					TABLE_NAME: table_prod.tableName,
+					AWS_REGION_NAME: this.region,
+					AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
+					AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
 				},
 			}
 		);
@@ -69,6 +103,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 				timeout: cdk.Duration.seconds(30),
 				environment: {
 					TABLE_NAME: table_dev.tableName,
+					AWS_REGION_NAME: this.region,
+					AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
+					AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
 				},
 			}
 		);
@@ -144,6 +181,17 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 		new cdk.CfnOutput(this, "ApiUrlDev", {
 			value: api_dev.url,
 			description: "Default Invoke URL for the FastAPI service",
+		});
+
+		// Output the Cognito User Pool and Client IDs
+		new cdk.CfnOutput(this, "UserPoolId", {
+			value: userPool.userPoolId,
+			description: "The ID of the Cognito User Pool",
+		});
+
+		new cdk.CfnOutput(this, "UserPoolClientId", {
+			value: userPoolClient.userPoolClientId,
+			description: "The ID of the Cognito User Pool Client",
 		});
 	}
 }
