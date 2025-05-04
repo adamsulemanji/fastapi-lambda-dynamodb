@@ -21,6 +21,7 @@ type MealItem struct {
 	EatingOut bool   `json:"eatingOut"`
 	Date      string `json:"date"`
 	Note      string `json:"note"`
+	Tags      []string `json:"tags"`
 }
 
 // Validate checks if a meal has required fields

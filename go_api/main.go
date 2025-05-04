@@ -23,12 +23,12 @@ func init() {
 
 // Handler processes API Gateway events
 func handler(ctx context.Context, req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	// Create router and process the request
+	// Create router and process the request using gorilla/mux
 	router := routes.NewRouter()
 	return router.Route(ctx, req)
 }
 
 func main() {
-	utils.Log.Info("Starting Go Meals API")
+	utils.Log.Info("Starting Go Meals API with gorilla/mux")
 	lambda.Start(handler)
 }

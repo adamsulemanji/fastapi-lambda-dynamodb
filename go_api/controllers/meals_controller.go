@@ -3,9 +3,12 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
+	"net/http"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/gorilla/mux"
 
 	"go-api/models"
 )
@@ -25,6 +28,72 @@ type SuccessResponse struct {
 
 // MealsController handles meal-related logic
 type MealsController struct{}
+
+// IndexHandler lists all meals
+func (c *MealsController) IndexHandler(w http.ResponseWriter, r *http.Request) {
+	resp, _ := c.Index(r.Context())
+	writeResponse(w, resp)
+}
+
+// ShowHandler gets a specific meal
+func (c *MealsController) ShowHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	resp, _ := c.Show(r.Context(), vars["id"])
+	writeResponse(w, resp)
+}
+
+// CreateHandler adds a new meal
+func (c *MealsController) CreateHandler(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		resp, _ := respondJSON(400, ErrorResponse{
+			Message: "Failed to read request body",
+			Error:   err.Error(),
+		})
+		writeResponse(w, resp)
+		return
+	}
+	resp, _ := c.Create(r.Context(), string(body))
+	writeResponse(w, resp)
+}
+
+// UpdateHandler modifies an existing meal
+func (c *MealsController) UpdateHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		resp, _ := respondJSON(400, ErrorResponse{
+			Message: "Failed to read request body",
+			Error:   err.Error(),
+		})
+		writeResponse(w, resp)
+		return
+	}
+	resp, _ := c.Update(r.Context(), vars["id"], string(body))
+	writeResponse(w, resp)
+}
+
+// DestroyHandler removes a meal
+func (c *MealsController) DestroyHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	resp, _ := c.Destroy(r.Context(), vars["id"])
+	writeResponse(w, resp)
+}
+
+// DestroyAllHandler removes all meals
+func (c *MealsController) DestroyAllHandler(w http.ResponseWriter, r *http.Request) {
+	resp, _ := c.DestroyAll(r.Context())
+	writeResponse(w, resp)
+}
+
+// Helper to write API Gateway response to HTTP response
+func writeResponse(w http.ResponseWriter, resp events.APIGatewayProxyResponse) {
+	for k, v := range resp.Headers {
+		w.Header().Set(k, v)
+	}
+	w.WriteHeader(resp.StatusCode)
+	w.Write([]byte(resp.Body))
+}
 
 // Index lists all meals
 func (c *MealsController) Index(ctx context.Context) (events.APIGatewayProxyResponse, error) {
