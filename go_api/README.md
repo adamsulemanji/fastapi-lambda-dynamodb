@@ -1,6 +1,20 @@
 # Go API Lambda - Meals Service
 
-This directory contains a Go-based API for managing meals data, running as an AWS Lambda function.
+This directory contains a Go-based API for managing meals data, running as an AWS Lambda function. The code follows a Rails-inspired MVC architecture.
+
+## Project Structure
+
+```
+go_api/
+├── config/        # Configuration management
+├── controllers/   # Business logic for API endpoints
+├── models/        # Data models and database operations
+├── routes/        # Routing and request handling
+├── utils/         # Utility functions and helpers
+├── main.go        # Application entry point
+├── go.mod         # Go module definition
+└── Dockerfile     # Docker container configuration
+```
 
 ## Endpoints
 
@@ -33,35 +47,43 @@ The meal data model includes:
 To run this API locally for development:
 
 1. Install Go (version 1.18 or later)
-2. Install AWS SAM CLI for local Lambda testing
-3. Install dependencies:
+2. Set up Go modules:
 
+```bash
+# Install dependencies
+go mod tidy
 ```
-go mod init go-api
-go get github.com/aws/aws-lambda-go/events
-go get github.com/aws/aws-lambda-go/lambda
-go get github.com/aws/aws-sdk-go/aws
-go get github.com/aws/aws-sdk-go/aws/session
-go get github.com/aws/aws-sdk-go/service/dynamodb
-go get github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute
-go get github.com/google/uuid
+
+3. Run the application locally (requires AWS credentials):
+
+```bash
+# Set environment variables
+export TABLE_NAME=MyTable-dev
+export AWS_REGION=us-east-1
+export STAGE=dev
+
+# Run
+go run main.go
 ```
 
 ## Docker
 
 To build and run the Docker container locally:
 
-```
-docker build -t go-api .
+```bash
+docker build -t go-meals-api .
 docker run -p 9000:8080 \
   -e TABLE_NAME=MyTable-dev \
   -e AWS_REGION=us-east-1 \
-  go-api
+  -e STAGE=dev \
+  -e AWS_ACCESS_KEY_ID=your-key \
+  -e AWS_SECRET_ACCESS_KEY=your-secret \
+  go-meals-api
 ```
 
 You can then test the API with:
 
-```
+```bash
 # List all meals
 curl -X POST "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{
   "resource": "/meals", 
