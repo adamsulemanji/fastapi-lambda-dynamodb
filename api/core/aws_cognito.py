@@ -7,7 +7,6 @@ from pydantic import EmailStr
 from schemas.auth import ChangePassword, ConfirmForgotPassword, UserSignin, UserSignup, UserVerify, PhoneVerify
 
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -15,7 +14,6 @@ AWS_REGION_NAME = os.getenv("AWS_REGION_NAME")
 AWS_COGNITO_APP_CLIENT_ID = os.getenv("AWS_COGNITO_APP_CLIENT_ID")
 AWS_COGNITO_USER_POOL_ID = os.getenv("AWS_COGNITO_USER_POOL_ID")
 
-# Improved error message with more specific troubleshooting hints
 missing_vars = []
 if not AWS_REGION_NAME: missing_vars.append("AWS_REGION_NAME")
 if not AWS_COGNITO_APP_CLIENT_ID: missing_vars.append("AWS_COGNITO_APP_CLIENT_ID")
