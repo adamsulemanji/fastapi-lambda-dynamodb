@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/gorilla/mux"
 
-	"go-api/models"
+	"go_api/models"
 )
 
 // Response types
@@ -28,6 +28,16 @@ type SuccessResponse struct {
 
 // MealsController handles meal-related logic
 type MealsController struct{}
+
+
+// HelloHandler handles the hello route
+func (c *MealsController) HelloHandler(w http.ResponseWriter, r *http.Request) {
+	resp, _ := respondJSON(200, SuccessResponse{
+		Success: true,
+		Message: "Hello, world!",
+	})
+	writeResponse(w, resp)
+}
 
 // IndexHandler lists all meals
 func (c *MealsController) IndexHandler(w http.ResponseWriter, r *http.Request) {

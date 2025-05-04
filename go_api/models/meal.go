@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 	"github.com/google/uuid"
 
-	"go-api/config"
+	"go_api/config"
 )
 
 // MealItem represents a meal record

@@ -6,9 +6,9 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 
-	"go-api/config"
-	"go-api/routes"
-	"go-api/utils"
+	"go_api/config"
+	"go_api/routes"
+	"go_api/utils"
 )
 
 func init() {
