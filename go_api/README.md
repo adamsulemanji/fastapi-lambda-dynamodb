@@ -1,18 +1,32 @@
-# Go API Lambda - Hello World
+# Go API Lambda - Meals Service
 
-This directory contains a simple Go-based Hello World API that runs as an AWS Lambda function.
+This directory contains a Go-based API for managing meals data, running as an AWS Lambda function.
 
-## Endpoint
+## Endpoints
 
-The API has a single endpoint that returns a Hello World message:
+The API provides the following endpoints:
+
+- `GET /meals` - List all meals
+- `GET /meals/{id}` - Get a specific meal by ID
+- `POST /meals` - Create a new meal
+- `PUT /meals/{id}` - Update an existing meal
+- `DELETE /meals/{id}` - Delete a specific meal
+- `DELETE /meals` - Delete all meals
+
+## Data Model
+
+The meal data model includes:
 
 ```json
 {
-  "message": "Hello, World!"
+  "mealID": "string",
+  "mealName": "string",
+  "mealType": "string",
+  "eatingOut": true|false,
+  "date": "2023-05-17T20:21:10Z",
+  "note": "string"
 }
 ```
-
-This will be returned for any path you call on the API.
 
 ## Local Development
 
@@ -20,17 +34,17 @@ To run this API locally for development:
 
 1. Install Go (version 1.18 or later)
 2. Install AWS SAM CLI for local Lambda testing
+3. Install dependencies:
 
 ```
-# Initialize Go modules
 go mod init go-api
-go mod tidy
-
-# Build the application
-go build -o main .
-
-# Test locally
-./main
+go get github.com/aws/aws-lambda-go/events
+go get github.com/aws/aws-lambda-go/lambda
+go get github.com/aws/aws-sdk-go/aws
+go get github.com/aws/aws-sdk-go/aws/session
+go get github.com/aws/aws-sdk-go/service/dynamodb
+go get github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute
+go get github.com/google/uuid
 ```
 
 ## Docker
@@ -39,13 +53,35 @@ To build and run the Docker container locally:
 
 ```
 docker build -t go-api .
-docker run -p 9000:8080 go-api
+docker run -p 9000:8080 \
+  -e TABLE_NAME=MyTable-dev \
+  -e AWS_REGION=us-east-1 \
+  go-api
 ```
 
 You can then test the API with:
 
 ```
-curl -X POST "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{"resource": "/", "path": "/", "httpMethod": "GET", "headers": {"Accept": "*/*"}, "multiValueHeaders": {"Accept": ["*/*"]}, "queryStringParameters": null, "multiValueQueryStringParameters": null, "pathParameters": null, "stageVariables": null, "requestContext": {"resourceId": "123456", "resourcePath": "/", "httpMethod": "GET"}, "body": null, "isBase64Encoded": false}'
+# List all meals
+curl -X POST "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{
+  "resource": "/meals", 
+  "path": "/meals", 
+  "httpMethod": "GET", 
+  "headers": {"Accept": "*/*"}, 
+  "requestContext": {"resourcePath": "/meals", "httpMethod": "GET"}, 
+  "isBase64Encoded": false
+}'
+
+# Create a meal
+curl -X POST "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{
+  "resource": "/meals", 
+  "path": "/meals", 
+  "httpMethod": "POST", 
+  "headers": {"Content-Type": "application/json"}, 
+  "body": "{\"mealName\": \"Chicken Curry\", \"mealType\": \"Dinner\", \"eatingOut\": false, \"date\": \"2023-05-17T20:21:10Z\", \"note\": \"Delicious meal\"}", 
+  "requestContext": {"resourcePath": "/meals", "httpMethod": "POST"}, 
+  "isBase64Encoded": false
+}'
 ```
 
 ## Deployment
