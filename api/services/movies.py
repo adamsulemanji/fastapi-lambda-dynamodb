@@ -2,17 +2,21 @@ import time
 import json
 import boto3
 import requests
+import logging
 from typing import Optional, List, Tuple
 from bs4 import BeautifulSoup
 from schemas.movies import MoviesSearch, MovieResult
 
+
+# Get a logger for this module
+logger = logging.getLogger(__name__)
 
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table("movies")
 
 
 DOMAIN = "https://letterboxd.com/"
-TTL = 21600
+TTL = 0
 
 def get_n_movies(profile_url: str, n: int) -> Tuple[List[str], BeautifulSoup]:
     """
@@ -20,14 +24,16 @@ def get_n_movies(profile_url: str, n: int) -> Tuple[List[str], BeautifulSoup]:
     Returns a tuple (list_of_movie_urls, profile_page_soup).
     """
     film_url_list = []
+    logger.info(f"Fetching movies from: {profile_url}")
     response = requests.get(profile_url)
     if response.status_code != 200:
-        print("Error retrieving URL:", profile_url)
+        logger.error(f"Error retrieving URL: {profile_url}, status: {response.status_code}")
     profile_soup = BeautifulSoup(response.content, "html.parser")
     film_list = profile_soup.find('ul', class_='poster-list')
     if film_list is None:
-        print("No film list found at:", profile_url)
+        logger.error(f"No film list found at: {profile_url}")
     films = film_list.find_all('li')
+    logger.info(f"Found {len(films)} films in HTML")
     for film in films:
         film_div = film.find('div')
         if film_div:
@@ -35,7 +41,9 @@ def get_n_movies(profile_url: str, n: int) -> Tuple[List[str], BeautifulSoup]:
             if film_card:
                 film_url_list.append(DOMAIN + film_card)
                 if len(film_url_list) == n:
+                    logger.info(f"Reached target of {n} films")
                     return film_url_list, profile_soup
+    logger.info(f"Found {len(film_url_list)} films (less than requested {n})")
     return film_url_list, profile_soup
 
 def get_user_rating(profile_soup: BeautifulSoup) -> List[str]:
@@ -44,6 +52,7 @@ def get_user_rating(profile_soup: BeautifulSoup) -> List[str]:
     """
     ratings = []
     rating_elements = profile_soup.select('span.rating')
+    logger.info(f"Found {len(rating_elements)} rating elements")
     for rating in rating_elements:
         ratings.append(rating.get_text(strip=True))
     return ratings
@@ -64,7 +73,7 @@ def get_movie_poster_url(movie_soup: BeautifulSoup) -> Optional[str]:
         json_obj = json.loads(json_text)
         return json_obj.get('image', None)
     except Exception as e:
-        print("Error parsing JSON from movie page:", e)
+        logger.error(f"Error parsing JSON from movie page: {e}")
         return None
 
 def get_movie_title(movie_soup: BeautifulSoup) -> str:
@@ -98,18 +107,23 @@ def get_movies_process_full(username: str, n: int) -> List[tuple]:
     profile_slug = f"{username}/films/by/date/"
     profile_url = DOMAIN + profile_slug
     movie_urls, profile_soup = get_n_movies(profile_url, n)
+
+    logger.info(f"Retrieving {len(movie_urls)} movies for {username}")
+
     ratings = get_user_rating(profile_soup)
     movies = []
     for i, movie_url in enumerate(movie_urls):
+        logger.info(f"Processing movie {i+1}/{len(movie_urls)}: {movie_url}")
         response = requests.get(movie_url)
         if response.status_code != 200:
-            print("Error retrieving film page:", movie_url)
+            logger.error(f"Error retrieving film page: {movie_url}, status: {response.status_code}")
             continue
         movie_soup = BeautifulSoup(response.content, "html.parser")
         title = get_movie_title(movie_soup)
         poster_url = get_movie_poster_url(movie_soup)
         director = get_movie_director(movie_soup)
         rating = ratings[i] if i < len(ratings) else None
+        logger.info(f"Found movie: {title} directed by {director}")
         movies.append((title, movie_url, poster_url, rating, director))
     return movies
 
@@ -121,11 +135,14 @@ def get_latest_movie(username: str) -> Optional[Tuple[str, str, Optional[str]]]:
     profile_slug = f"{username}/films/by/date/"
     profile_url = DOMAIN + profile_slug
     movie_urls, _ = get_n_movies(profile_url, 1)
+
+    logger.info(f"Retrieving latest movie for {username}: {movie_urls}")
+
     if movie_urls:
         movie_url = movie_urls[0]
         response = requests.get(movie_url)
         if response.status_code != 200:
-            print("Error retrieving film page:", movie_url)
+            logger.error(f"Error retrieving film page: {movie_url}, status: {response.status_code}")
             return None
         movie_soup = BeautifulSoup(response.content, "html.parser")
         title = get_movie_title(movie_soup)
@@ -140,29 +157,29 @@ def get_movies(search: MoviesSearch) -> List[MovieResult]:
     """
     username = search.username
     now = int(time.time())
+
+    logger.info(f"Retrieving movies for: {username}")
     
     # Check for a cached item
     cached_item = table.get_item(Key={'username': username}).get('Item')
+
     if cached_item:
         last_updated = cached_item.get('last_updated', 0)
         cached_movies = cached_item.get('movies', [])
         
+        logger.info(f"Found cached data with {len(cached_movies)} movies, age: {now - last_updated}s")
 
         if now - last_updated < TTL:
+            logger.info(f"Cache hit, returning {len(cached_movies)} movies")
             return [MovieResult(**movie) for movie in cached_movies]
         
         # If cache is stale, verify if the latest movie has changed
         fresh_first = get_latest_movie(username)
         if fresh_first and cached_movies:
             if cached_movies[0]['letterboxd_url'] == fresh_first[1]:
-                # Update only the timestamp if nothing has changed
-                table.update_item(
-                    Key={'username': username},
-                    UpdateExpression="SET last_updated = :now",
-                    ExpressionAttributeValues={":now": now}
-                )
                 return [MovieResult(**movie) for movie in cached_movies]
     
+    logger.info(f"Fetching fresh data for {username}")
     movie_info = get_movies_process_full(username, 4)
     movies_to_cache = [
         {
@@ -181,6 +198,8 @@ def get_movies(search: MoviesSearch) -> List[MovieResult]:
         'movies': movies_to_cache,
         'last_updated': now
     }
+    logger.info(f"Updating cache with {len(movies_to_cache)} movies")
     table.put_item(Item=cache_item)
     
+    logger.info(f"Returning {len(movies_to_cache)} movies")
     return [MovieResult(**movie) for movie in movies_to_cache]
