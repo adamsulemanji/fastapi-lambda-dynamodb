@@ -13,20 +13,31 @@ from services.movies import (
 router = APIRouter()
 
 
-@router.post("/search", response_model=List[MovieResult])
-def search_movies(search: MoviesSearch, limit: Optional[int] = Query(None, description="Limit number of movies returned")):
+@router.get("/search", response_model=List[MovieResult])
+def search_movies(
+    username: str = Query(..., description="Letterboxd username to fetch movies for"),
+    limit: int = Query(10, description="Limit number of movies returned. Use 0 for all movies.")
+):
     """
     Get movies for a user.
-    Set limit=0 or omit to get all movies.
-    Set limit=n to get the n most recent movies.
+    
+    - username: Letterboxd username (required)
+    - limit: Maximum number of movies to return
+      - limit=0: Return all movies
+      - limit=n: Return at most n most recent movies
+      - If limit > available movies, returns all available movies
     """
+    # Create search object
+    search = MoviesSearch(username=username)
+    
+    # Get all movies
     movies = get_movies(search)
     
-    # If limit is specified and not 0, return only that many movies
-    if limit and limit > 0:
+    # Handle limit parameter
+    if limit == 0 or limit >= len(movies):
+        return movies
+    else:
         return movies[:limit]
-    
-    return movies
 
 
 @router.post("/backfill", response_model=Dict[str, Any])
