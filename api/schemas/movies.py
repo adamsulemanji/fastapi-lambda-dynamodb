@@ -9,7 +9,11 @@ class MovieResult(BaseModel):
     letterboxd_url: str
     poster_url: Optional[str] = None
     rating: Optional[str] = None
-    director: List[str] = [] 
+    director: List[str] = []
+    review: Optional[str] = None
+    release_year: Optional[str] = None
+    review_date: Optional[str] = None
+    review_url: Optional[str] = None
 
 class MoviesResult(BaseModel):
     movies: List[MovieResult]
