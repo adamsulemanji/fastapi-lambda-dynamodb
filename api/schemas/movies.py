@@ -3,6 +3,7 @@ from typing import List, Optional
 
 class MoviesSearch(BaseModel):
     username: str
+    fast_mode: bool = False
 
 class MovieResult(BaseModel):
     title: str

@@ -105,7 +105,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         }
       ),
       memorySize: 512,
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(300),
       environment: {
         TABLE_NAME: table_prod.tableName,
         AWS_REGION_NAME: this.region,
@@ -141,7 +141,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           }
         ),
         memorySize: 512,
-        timeout: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(300),
         environment: {
           TABLE_NAME: table_prod.tableName,
           AWS_REGION_NAME: this.region,
@@ -180,7 +180,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           }
         ),
         memorySize: 512,
-        timeout: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(300),
         environment: {
           TABLE_NAME: table_dev.tableName,
           AWS_REGION_NAME: this.region,

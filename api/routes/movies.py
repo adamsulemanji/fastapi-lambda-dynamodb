@@ -16,7 +16,8 @@ router = APIRouter()
 @router.get("/search", response_model=List[MovieResult])
 def search_movies(
     username: str = Query(..., description="Letterboxd username to fetch movies for"),
-    limit: int = Query(10, description="Limit number of movies returned. Use 0 for all movies.")
+    limit: int = Query(10, description="Limit number of movies returned. Use 0 for all movies."),
+    fast: bool = Query(False, description="Return cached data only, don't scrape new movies")
 ):
     """
     Get movies for a user.
@@ -25,10 +26,11 @@ def search_movies(
     - limit: Maximum number of movies to return
       - limit=0: Return all movies
       - limit=n: Return at most n most recent movies
-      - If limit > available movies, returns all available movies
+      - If limit > available movies, returns all available movies  
+    - fast: Return cached data only (faster, no new scraping)
     """
     # Create search object
-    search = MoviesSearch(username=username)
+    search = MoviesSearch(username=username, fast_mode=fast)
     
     # Get all movies
     movies = get_movies(search)

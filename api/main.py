@@ -20,18 +20,25 @@ app = FastAPI(title="Meals, Movies, Cognito API")
 origins = [
     "https://adamsulemanji.com",
     "https://adamsulemanji.com/",
-
+    "https://www.adamsulemanji.com",
+    "https://www.adamsulemanji.com/",
+    
+    # Your frontend domains
+    "https://adamsulemanji.vercel.app",
+    "https://adamsulemanji.vercel.app/",
+    
+    # API domains
     "https://api.fast.adamsulemanji.com",
     "https://api.fast.adamsulemanji.com/",
 
+    # Development
     "http://localhost:8000",
     "http://localhost:8000/",
-
     "http://localhost:3000",
     "http://localhost:3000/",
-
-    "https://www.adamsulemanji.com",
-    "https://www.adamsulemanji.com/",
+    
+    # Catch common variations
+    "*"  # Allow all origins for debugging - remove in production
 ]
 
 app.add_middleware(

@@ -7,3 +7,6 @@ requests
 pydantic[email]
 jose
 python-jose
+aiohttp
+httpx
+asyncio

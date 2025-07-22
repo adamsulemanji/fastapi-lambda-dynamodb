@@ -4,6 +4,9 @@ import boto3
 import requests
 import logging
 import random
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Tuple, Dict, Any
 from bs4 import BeautifulSoup
 from schemas.movies import MoviesSearch, MovieResult
@@ -21,11 +24,14 @@ DOMAIN = "https://letterboxd.com/"
 TTL = 21600
 
 # Rate limiting constants
-MIN_DELAY = 1.0  # Minimum delay between requests in seconds
-MAX_DELAY = 2.0  # Maximum delay between requests in seconds
-RETRY_DELAY = 30  # Delay after a 429 error in seconds
-MAX_RETRIES = 3  # Maximum number of retries for a request
-SEARCHING_DELAY = 5
+MIN_DELAY = 0.5  # Minimum delay between requests in seconds  
+MAX_DELAY = 1.0  # Maximum delay between requests in seconds
+RETRY_DELAY = 10  # Delay after a 429 error in seconds
+MAX_RETRIES = 2  # Maximum number of retries for a request
+SEARCHING_DELAY = 3
+REQUEST_TIMEOUT = 30  # Timeout for individual requests
+BATCH_SIZE = 5  # Process movies in smaller batches
+MAX_MOVIES_PER_REQUEST = 50  # Limit movies processed per API call
 
 def make_request(url: str, retries: int = MAX_RETRIES) -> Optional[requests.Response]:
     """
@@ -45,7 +51,8 @@ def make_request(url: str, retries: int = MAX_RETRIES) -> Optional[requests.Resp
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Accept-Language': 'en-US,en;q=0.9',
                     'Referer': DOMAIN,
-                }
+                },
+                timeout=REQUEST_TIMEOUT
             )
             
             if response.status_code == 429:
@@ -363,7 +370,7 @@ def process_movie_data(movie_url: str, username: str, rating: Optional[str] = No
         logger.error(f"Error processing movie {movie_url}: {str(e)}")
         return None
 
-def get_all_movies(username: str, batch_size: int = 10, existing_movies: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies: List[Dict[str, Any]] = None, max_movies: int = MAX_MOVIES_PER_REQUEST) -> List[Dict[str, Any]]:
     """
     Get all movies for a user, including their ratings, processing in batches.
     If existing_movies is provided, only fetch and process new movies.
@@ -383,6 +390,11 @@ def get_all_movies(username: str, batch_size: int = 10, existing_movies: List[Di
     # Filter out movies we already have
     new_movie_urls = [url for url in movie_urls if url not in existing_urls]
     logger.info(f"Found {len(new_movie_urls)} new movies to process")
+    
+    # Limit the number of new movies to process per request
+    if len(new_movie_urls) > max_movies:
+        new_movie_urls = new_movie_urls[:max_movies]
+        logger.info(f"Limiting to {max_movies} movies for this request to prevent timeout")
     
     # If no new movies, return existing ones
     if not new_movie_urls:
@@ -428,9 +440,10 @@ def get_movies(search: MoviesSearch) -> List[MovieResult]:
     Returns a list of MovieResult objects.
     """
     username = search.username
+    fast_mode = search.fast_mode
     now = int(time.time())
     
-    logger.info(f"Retrieving movies for: {username}")
+    logger.info(f"Retrieving movies for: {username} (fast_mode: {fast_mode})")
     
     # Check for a cached item
     cached_item = table.get_item(Key={'username': username}).get('Item')
@@ -441,6 +454,11 @@ def get_movies(search: MoviesSearch) -> List[MovieResult]:
         
         logger.info(f"Found cached data with {len(cached_movies)} movies, age: {now - last_updated}s, complete: {is_complete}")
 
+        # If fast mode, always return cached data
+        if fast_mode:
+            logger.info(f"Fast mode: returning {len(cached_movies)} cached movies")
+            return [MovieResult(**movie) for movie in cached_movies]
+
         # If cache is recent, return it directly
         if now - last_updated < TTL:
             logger.info(f"Cache hit, returning {len(cached_movies)} movies")
@@ -450,6 +468,11 @@ def get_movies(search: MoviesSearch) -> List[MovieResult]:
         logger.info(f"Cache is stale, performing smart update")
         movies_to_cache = get_all_movies(username, existing_movies=cached_movies)
     else:
+        # Fast mode with no cache - return empty
+        if fast_mode:
+            logger.info("Fast mode: no cached data found, returning empty list")
+            return []
+            
         # No cache exists, fetch all movies
         logger.info(f"No cached data found, fetching all movies")
         movies_to_cache = get_all_movies(username)
