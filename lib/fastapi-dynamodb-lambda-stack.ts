@@ -8,6 +8,11 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as path from "path";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as sqs from "aws-cdk-lib/aws-sqs";
+import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as sfn from "aws-cdk-lib/aws-stepfunctions";
+import * as sfnTasks from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { RemovalPolicy } from "aws-cdk-lib";
 import { ApiGatewayDomain } from "aws-cdk-lib/aws-route53-targets";
 
@@ -42,6 +47,86 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         name: "username",
         type: dynamodb.AttributeType.STRING,
       },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    const table_movies_jobs = new dynamodb.Table(this, "MoviesJobsTable", {
+      tableName: "movies-jobs",
+      partitionKey: {
+        name: "job_id",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "expires_at",
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    table_movies_jobs.addGlobalSecondaryIndex({
+      indexName: "username-created_at-index",
+      partitionKey: {
+        name: "username",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: "created_at",
+        type: dynamodb.AttributeType.NUMBER,
+      },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    const table_movies_poster_jobs = new dynamodb.Table(this, "MoviesPosterJobsTable", {
+      tableName: "movies-poster-jobs",
+      partitionKey: {
+        name: "job_id",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "expires_at",
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    table_movies_poster_jobs.addGlobalSecondaryIndex({
+      indexName: "username-created_at-index",
+      partitionKey: {
+        name: "username",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: "created_at",
+        type: dynamodb.AttributeType.NUMBER,
+      },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    const moviesScrapeDlq = new sqs.Queue(this, "MoviesScrapeDlq", {
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    const moviesScrapeQueue = new sqs.Queue(this, "MoviesScrapeQueue", {
+      visibilityTimeout: cdk.Duration.minutes(16),
+      retentionPeriod: cdk.Duration.days(4),
+      deadLetterQueue: {
+        queue: moviesScrapeDlq,
+        maxReceiveCount: 3,
+      },
+    });
+
+    const moviesPosterTempBucket = new s3.Bucket(this, "MoviesPosterTempBucket", {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      lifecycleRules: [
+        {
+          expiration: cdk.Duration.days(3),
+        },
+      ],
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    const moviesPosterOutputBucket = new s3.Bucket(this, "MoviesPosterOutputBucket", {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
@@ -147,6 +232,14 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           AWS_REGION_NAME: this.region,
           AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
           AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
+          MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
+          MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
+          MOVIES_SCRAPE_QUEUE_URL: moviesScrapeQueue.queueUrl,
+          MOVIES_POSTER_JOBS_TABLE_NAME: table_movies_poster_jobs.tableName,
+          MOVIES_POSTER_JOBS_USERNAME_INDEX: "username-created_at-index",
+          MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
+          MOVIES_POSTER_URL_EXPIRATION_SECONDS: "604800",
         },
         architecture: lambda.Architecture.X86_64,
       }
@@ -156,6 +249,10 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     fastApiLambda_prod.addToRolePolicy(cognitoPolicy);
     table_prod.grantReadWriteData(fastApiLambda_prod);
     table_movies.grantReadWriteData(fastApiLambda_prod);
+    table_movies_jobs.grantReadWriteData(fastApiLambda_prod);
+    table_movies_poster_jobs.grantReadWriteData(fastApiLambda_prod);
+    moviesScrapeQueue.grantSendMessages(fastApiLambda_prod);
+    moviesPosterOutputBucket.grantRead(fastApiLambda_prod);
 
     // API Gateway for FastAPI Lambda - Production
     const api_prod = new apigateway.LambdaRestApi(this, "FastApiGateway", {
@@ -203,6 +300,14 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           AWS_REGION_NAME: this.region,
           AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
           AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
+          MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
+          MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
+          MOVIES_SCRAPE_QUEUE_URL: moviesScrapeQueue.queueUrl,
+          MOVIES_POSTER_JOBS_TABLE_NAME: table_movies_poster_jobs.tableName,
+          MOVIES_POSTER_JOBS_USERNAME_INDEX: "username-created_at-index",
+          MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
+          MOVIES_POSTER_URL_EXPIRATION_SECONDS: "604800",
         },
         architecture: lambda.Architecture.X86_64, 
       }
@@ -212,6 +317,10 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     fastApiLambda_dev.addToRolePolicy(cognitoPolicy);
     table_dev.grantReadWriteData(fastApiLambda_dev);
     table_movies.grantReadWriteData(fastApiLambda_dev);
+    table_movies_jobs.grantReadWriteData(fastApiLambda_dev);
+    table_movies_poster_jobs.grantReadWriteData(fastApiLambda_dev);
+    moviesScrapeQueue.grantSendMessages(fastApiLambda_dev);
+    moviesPosterOutputBucket.grantRead(fastApiLambda_dev);
 
     // API Gateway for FastAPI Lambda - Development
     const api_dev = new apigateway.LambdaRestApi(this, "FastApiGatewayDev", {
@@ -238,6 +347,243 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         allowCredentials: true,
       },
     });
+
+    // ========================================================================
+    // Movies Worker Lambda (SQS Consumer)
+    // ========================================================================
+    const moviesWorkerLambda = new lambda.DockerImageFunction(
+      this,
+      "MoviesWorkerFunction",
+      {
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../api"),
+          {
+            buildArgs: {
+              "--platform": "linux/amd64",
+            },
+            cmd: ["worker.handler"],
+          }
+        ),
+        memorySize: 1024,
+        timeout: cdk.Duration.minutes(15),
+        environment: {
+          AWS_REGION_NAME: this.region,
+          MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
+          MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
+        },
+        architecture: lambda.Architecture.X86_64,
+      }
+    );
+
+    moviesWorkerLambda.addEventSource(
+      new lambdaEventSources.SqsEventSource(moviesScrapeQueue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      })
+    );
+
+    table_movies.grantReadWriteData(moviesWorkerLambda);
+    table_movies_jobs.grantReadWriteData(moviesWorkerLambda);
+    moviesScrapeQueue.grantConsumeMessages(moviesWorkerLambda);
+
+    // ========================================================================
+    // Movies Poster Workflow Lambdas
+    // ========================================================================
+    const posterBuildManifestLambda = new lambda.DockerImageFunction(
+      this,
+      "PosterBuildManifestFunction",
+      {
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../api"),
+          {
+            buildArgs: {
+              "--platform": "linux/amd64",
+            },
+            cmd: ["poster_worker.build_manifest_handler"],
+          }
+        ),
+        memorySize: 1024,
+        timeout: cdk.Duration.minutes(15),
+        environment: {
+          AWS_REGION_NAME: this.region,
+          MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_POSTER_JOBS_TABLE_NAME: table_movies_poster_jobs.tableName,
+          MOVIES_POSTER_TEMP_BUCKET_NAME: moviesPosterTempBucket.bucketName,
+        },
+        architecture: lambda.Architecture.X86_64,
+      }
+    );
+
+    const posterProcessItemLambda = new lambda.DockerImageFunction(
+      this,
+      "PosterProcessItemFunction",
+      {
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../api"),
+          {
+            buildArgs: {
+              "--platform": "linux/amd64",
+            },
+            cmd: ["poster_worker.process_poster_item_handler"],
+          }
+        ),
+        memorySize: 1024,
+        timeout: cdk.Duration.minutes(2),
+        environment: {
+          AWS_REGION_NAME: this.region,
+          MOVIES_POSTER_JOBS_TABLE_NAME: table_movies_poster_jobs.tableName,
+          MOVIES_POSTER_TEMP_BUCKET_NAME: moviesPosterTempBucket.bucketName,
+        },
+        architecture: lambda.Architecture.X86_64,
+      }
+    );
+
+    const posterRenderLambda = new lambda.DockerImageFunction(
+      this,
+      "PosterRenderFunction",
+      {
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../api"),
+          {
+            buildArgs: {
+              "--platform": "linux/amd64",
+            },
+            cmd: ["poster_worker.render_poster_handler"],
+          }
+        ),
+        memorySize: 3008,
+        timeout: cdk.Duration.minutes(15),
+        ephemeralStorageSize: cdk.Size.gibibytes(3),
+        environment: {
+          AWS_REGION_NAME: this.region,
+          MOVIES_POSTER_JOBS_TABLE_NAME: table_movies_poster_jobs.tableName,
+          MOVIES_POSTER_TEMP_BUCKET_NAME: moviesPosterTempBucket.bucketName,
+          MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
+        },
+        architecture: lambda.Architecture.X86_64,
+      }
+    );
+
+    const posterFailLambda = new lambda.DockerImageFunction(
+      this,
+      "PosterFailFunction",
+      {
+        code: lambda.DockerImageCode.fromImageAsset(
+          path.join(__dirname, "../api"),
+          {
+            buildArgs: {
+              "--platform": "linux/amd64",
+            },
+            cmd: ["poster_worker.fail_poster_job_handler"],
+          }
+        ),
+        memorySize: 512,
+        timeout: cdk.Duration.minutes(1),
+        environment: {
+          AWS_REGION_NAME: this.region,
+          MOVIES_POSTER_JOBS_TABLE_NAME: table_movies_poster_jobs.tableName,
+        },
+        architecture: lambda.Architecture.X86_64,
+      }
+    );
+
+    table_movies.grantReadData(posterBuildManifestLambda);
+    table_movies_poster_jobs.grantReadWriteData(posterBuildManifestLambda);
+    table_movies_poster_jobs.grantReadWriteData(posterProcessItemLambda);
+    table_movies_poster_jobs.grantReadWriteData(posterRenderLambda);
+    table_movies_poster_jobs.grantReadWriteData(posterFailLambda);
+
+    moviesPosterTempBucket.grantReadWrite(posterBuildManifestLambda);
+    moviesPosterTempBucket.grantReadWrite(posterProcessItemLambda);
+    moviesPosterTempBucket.grantReadWrite(posterRenderLambda);
+    moviesPosterOutputBucket.grantPut(posterRenderLambda);
+
+    const buildPosterManifestTask = new sfnTasks.LambdaInvoke(this, "BuildPosterManifestTask", {
+      lambdaFunction: posterBuildManifestLambda,
+      payload: sfn.TaskInput.fromObject({
+        "job_id.$": "$.job_id",
+        "username.$": "$.username",
+        "movie_count.$": "$.movie_count",
+        "bootstrap_movies.$": "$.bootstrap_movies",
+      }),
+      payloadResponseOnly: true,
+    });
+
+    const processPosterItemTask = new sfnTasks.LambdaInvoke(this, "ProcessPosterItemTask", {
+      lambdaFunction: posterProcessItemLambda,
+      payload: sfn.TaskInput.fromObject({
+        "job_id.$": "$.job_id",
+        "username.$": "$.username",
+        "movie_count.$": "$.movie_count",
+        "total_items.$": "$.total_items",
+        "movie.$": "$.movie",
+      }),
+      payloadResponseOnly: true,
+    });
+
+    const processPosterMap = new sfn.Map(this, "ProcessPosterMap", {
+      itemsPath: sfn.JsonPath.stringAt("$.movies"),
+      resultPath: "$.processed_items",
+      itemSelector: {
+        "job_id.$": "$.job_id",
+        "username.$": "$.username",
+        "movie_count.$": "$.movie_count",
+        "total_items.$": "$.total_items",
+        "movie.$": "$$.Map.Item.Value",
+      },
+      maxConcurrency: 20,
+    });
+    processPosterMap.itemProcessor(processPosterItemTask);
+
+    const renderPosterTask = new sfnTasks.LambdaInvoke(this, "RenderPosterTask", {
+      lambdaFunction: posterRenderLambda,
+      payload: sfn.TaskInput.fromObject({
+        "job_id.$": "$.job_id",
+        "username.$": "$.username",
+        "movie_count.$": "$.movie_count",
+        "total_items.$": "$.total_items",
+        "processed_items.$": "$.processed_items",
+      }),
+      payloadResponseOnly: true,
+    });
+
+    const failPosterJobTask = new sfnTasks.LambdaInvoke(this, "FailPosterJobTask", {
+      lambdaFunction: posterFailLambda,
+      payload: sfn.TaskInput.fromObject({
+        "job_id.$": "$.job_id",
+        "error.$": "$.workflow_error.Error",
+        "cause.$": "$.workflow_error.Cause",
+      }),
+      payloadResponseOnly: true,
+    });
+
+    const posterWorkflowFailed = new sfn.Fail(this, "PosterWorkflowFailed", {
+      cause: "Poster workflow failed",
+    });
+    const posterFailureChain = sfn.Chain.start(failPosterJobTask).next(posterWorkflowFailed);
+
+    buildPosterManifestTask.addCatch(posterFailureChain, {
+      resultPath: "$.workflow_error",
+    });
+    processPosterMap.addCatch(posterFailureChain, {
+      resultPath: "$.workflow_error",
+    });
+    renderPosterTask.addCatch(posterFailureChain, {
+      resultPath: "$.workflow_error",
+    });
+
+    const moviesPosterStateMachine = new sfn.StateMachine(this, "MoviesPosterStateMachine", {
+      definitionBody: sfn.DefinitionBody.fromChainable(
+        sfn.Chain.start(buildPosterManifestTask).next(processPosterMap).next(renderPosterTask)
+      ),
+      timeout: cdk.Duration.minutes(30),
+    });
+
+    moviesPosterStateMachine.grantStartExecution(fastApiLambda_prod);
+    moviesPosterStateMachine.grantStartExecution(fastApiLambda_dev);
+    fastApiLambda_prod.addEnvironment("MOVIES_POSTER_STATE_MACHINE_ARN", moviesPosterStateMachine.stateMachineArn);
+    fastApiLambda_dev.addEnvironment("MOVIES_POSTER_STATE_MACHINE_ARN", moviesPosterStateMachine.stateMachineArn);
 
     // ========================================================================
     // Domain Configuration
@@ -340,6 +686,31 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     new cdk.CfnOutput(this, "UserPoolClientId", {
       value: userPoolClient.userPoolClientId,
       description: "The ID of the Cognito User Pool Client",
+    });
+
+    new cdk.CfnOutput(this, "MoviesJobsTableName", {
+      value: table_movies_jobs.tableName,
+      description: "DynamoDB table storing async movies job status",
+    });
+
+    new cdk.CfnOutput(this, "MoviesScrapeQueueUrl", {
+      value: moviesScrapeQueue.queueUrl,
+      description: "SQS queue URL for movies scrape jobs",
+    });
+
+    new cdk.CfnOutput(this, "MoviesPosterJobsTableName", {
+      value: table_movies_poster_jobs.tableName,
+      description: "DynamoDB table storing poster generation jobs",
+    });
+
+    new cdk.CfnOutput(this, "MoviesPosterOutputBucketName", {
+      value: moviesPosterOutputBucket.bucketName,
+      description: "S3 bucket storing generated poster images",
+    });
+
+    new cdk.CfnOutput(this, "MoviesPosterStateMachineArn", {
+      value: moviesPosterStateMachine.stateMachineArn,
+      description: "Step Functions state machine for poster workflows",
     });
   }
 }

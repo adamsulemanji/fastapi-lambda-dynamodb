@@ -10,3 +10,4 @@ jose
 python-jose
 aiohttp
 httpx
+Pillow

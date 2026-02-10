@@ -7,10 +7,11 @@ import random
 import re
 import asyncio
 import aiohttp
+import os
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Callable
 from xml.etree import ElementTree as ET
 from bs4 import BeautifulSoup
 from schemas.movies import MoviesSearch, MovieResult
@@ -19,8 +20,9 @@ from schemas.movies import MoviesSearch, MovieResult
 # Get a logger for this module
 logger = logging.getLogger(__name__)
 
+movies_table_name = os.environ.get("MOVIES_TABLE_NAME", "movies")
 dynamodb = boto3.resource("dynamodb")
-table = dynamodb.Table("movies")
+table = dynamodb.Table(movies_table_name)
 
 
 DOMAIN = "https://letterboxd.com/"
@@ -35,7 +37,7 @@ MAX_RETRIES = 2  # Maximum number of retries for a request
 SEARCHING_DELAY = 3
 REQUEST_TIMEOUT = 30  # Timeout for individual requests
 BATCH_SIZE = 5  # Process movies in smaller batches
-MAX_MOVIES_PER_REQUEST = 50  # Limit movies processed per API call
+MAX_MOVIES_PER_REQUEST = 5000  # Limit movies processed per API call
 RSS_DIRECTOR_ENRICH_LIMIT = 15
 LETTERBOXD_NS = "https://letterboxd.com"
 WATCHED_DATE_PATTERN = re.compile(r"^Watched on (?P<date>.+)\.$")
@@ -83,6 +85,17 @@ def _get_next_page_url(page_soup: BeautifulSoup) -> Optional[str]:
         return None
 
     return DOMAIN + href.lstrip("/")
+
+
+def _build_films_page_url(username: str, page_number: int) -> str:
+    """
+    Build Letterboxd diary page URLs using the stable page pattern:
+    /<username>/films/by/date/page/<n>/
+    """
+    base_url = f"{DOMAIN}{username}/films/by/date/"
+    if page_number <= 1:
+        return base_url
+    return f"{base_url}page/{page_number}/"
 
 def _normalize_review_url_to_film_url(username: str, url: str) -> str:
     """
@@ -295,7 +308,7 @@ def _is_unknown_director_value(value: Any) -> bool:
     cleaned = [str(item).strip() for item in value]
     return cleaned == ["Unknown Director"]
 
-def _extract_movies_from_rss(username: str, max_movies: int = MAX_MOVIES_PER_REQUEST) -> List[Dict[str, Any]]:
+def _extract_movies_from_rss(username: str, max_movies: Optional[int] = MAX_MOVIES_PER_REQUEST) -> List[Dict[str, Any]]:
     """
     Fallback parser for Letterboxd RSS feed when HTML pages are blocked.
     """
@@ -320,8 +333,12 @@ def _extract_movies_from_rss(username: str, max_movies: int = MAX_MOVIES_PER_REQ
     if channel is None:
         return []
 
+    items = channel.findall("item")
+    if max_movies and max_movies > 0:
+        items = items[:max_movies]
+
     movies: List[Dict[str, Any]] = []
-    for index, item in enumerate(channel.findall("item")[:max_movies]):
+    for index, item in enumerate(items):
         raw_title = item.findtext("title", default="")
         review_url = item.findtext("link", default="")
         description_html = item.findtext("description", default="")
@@ -433,6 +450,29 @@ def _delete_cached_item(username: str) -> None:
     except Exception as exc:
         logger.warning("DynamoDB cache delete failed for %s: %s", username, exc)
 
+def get_cached_movies_state(username: str) -> Dict[str, Any]:
+    """
+    Return cache metadata for a username without triggering scraping.
+    """
+    now = int(time.time())
+    cached_item = _get_cached_item(username)
+    if not cached_item:
+        return {
+            "exists": False,
+            "is_stale": True,
+            "last_updated": None,
+            "movies": [],
+        }
+
+    last_updated = cached_item.get("last_updated", 0)
+    cached_movies = cached_item.get("movies", [])
+    return {
+        "exists": True,
+        "is_stale": (now - last_updated) >= TTL,
+        "last_updated": last_updated,
+        "movies": cached_movies,
+    }
+
 def make_request(url: str, retries: int = MAX_RETRIES) -> Optional[requests.Response]:
     """
     Make a request with rate limiting to avoid 429 errors
@@ -479,14 +519,12 @@ def get_all_movie_urls(username: str, max_pages: int = 20) -> List[str]:
     Get all movie URLs for a user by traversing pagination
     Returns a list of all film URLs found.
     """
-    profile_slug = f"{username}/films/by/date/"
-    base_url = DOMAIN + profile_slug
-    
     all_film_urls = []
+    seen_urls = set()
     current_page = 1
-    current_url = base_url
     
     while current_page <= max_pages:
+        current_url = _build_films_page_url(username, current_page)
         logger.info(f"Fetching page {current_page}: {current_url}")
         
         try:
@@ -512,23 +550,27 @@ def get_all_movie_urls(username: str, max_pages: int = 20) -> List[str]:
                     current_url,
                 )
             
-            # Add URLs from this page
-            all_film_urls.extend(page_urls)
-            logger.info(f"Added {len(page_urls)} film URLs from page {current_page}")
-            
-            # Look for next page link
-            next_url = _get_next_page_url(soup)
-            if next_url:
-                current_url = next_url
-                current_page += 1
-            else:
-                logger.info("No more pagination links found, reached end of list")
-                break
+            # Add only unseen URLs from this page
+            page_new_urls = [url for url in page_urls if url not in seen_urls]
+            seen_urls.update(page_new_urls)
+            all_film_urls.extend(page_new_urls)
+            logger.info(
+                "Added %s film URLs from page %s (%s duplicate(s) skipped)",
+                len(page_new_urls),
+                current_page,
+                len(page_urls) - len(page_new_urls),
+            )
                 
             if not page_urls:
                 # No films found on this page
                 logger.info("No films found on this page, stopping pagination")
                 break
+
+            if current_page > 1 and not page_new_urls:
+                logger.info("No new film URLs found on page %s, stopping pagination", current_page)
+                break
+
+            current_page += 1
                 
         except Exception as e:
             logger.error(f"Error processing page {current_page}: {e}")
@@ -543,14 +585,12 @@ def get_user_ratings(username: str) -> Dict[str, str]:
     Returns a dictionary mapping film URL to rating
     """
     ratings = {}
-    profile_slug = f"{username}/films/by/date/"
-    base_url = DOMAIN + profile_slug
     
     current_page = 1
-    current_url = base_url
     max_pages = 20  # Reasonable limit to prevent infinite loops
     
     while current_page <= max_pages:
+        current_url = _build_films_page_url(username, current_page)
         logger.info(f"Fetching ratings from page {current_page}: {current_url}")
         
         try:
@@ -587,13 +627,11 @@ def get_user_ratings(username: str) -> Dict[str, str]:
             
             logger.info(f"Found {len(ratings)} ratings so far")
             
-            # Check for next page
-            next_url = _get_next_page_url(soup)
-            if next_url:
-                current_url = next_url
-                current_page += 1
-            else:
+            if not film_items:
+                logger.info("No film items found on page %s, stopping ratings pagination", current_page)
                 break
+
+            current_page += 1
                 
         except Exception as e:
             logger.error(f"Error processing ratings page {current_page}: {e}")
@@ -761,7 +799,13 @@ def process_movie_data(movie_url: str, username: str, rating: Optional[str] = No
         logger.error(f"Error processing movie {movie_url}: {str(e)}")
         return None
 
-def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies: List[Dict[str, Any]] = None, max_movies: int = MAX_MOVIES_PER_REQUEST) -> List[Dict[str, Any]]:
+def get_all_movies(
+    username: str,
+    batch_size: int = BATCH_SIZE,
+    existing_movies: List[Dict[str, Any]] = None,
+    max_movies: Optional[int] = MAX_MOVIES_PER_REQUEST,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> List[Dict[str, Any]]:
     """
     Get all movies for a user, including their ratings, processing in batches.
     If existing_movies is provided, only fetch and process new movies.
@@ -773,6 +817,14 @@ def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies:
     existing_count = len(movies)
     existing_urls = {movie["letterboxd_url"] for movie in movies} if movies else set()
     logger.info(f"Starting with {existing_count} existing movies")
+
+    if progress_callback:
+        progress_callback(
+            {
+                "phase": "discovering_urls",
+                "message": "Discovering movie URLs from Letterboxd",
+            }
+        )
     
     # Get all movie URLs
     movie_urls = get_all_movie_urls(username)
@@ -790,6 +842,15 @@ def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies:
                 'is_complete': False
             }
             _put_cached_item(cache_item)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "phase": "completed",
+                        "message": "Completed using RSS fallback",
+                        "processed_movies": len(rss_movies),
+                        "total_movies": len(rss_movies),
+                    }
+                )
             return merged_movies
     
     # Filter out movies we already have
@@ -797,17 +858,38 @@ def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies:
     logger.info(f"Found {len(new_movie_urls)} new movies to process")
     
     # Limit the number of new movies to process per request
-    if len(new_movie_urls) > max_movies:
+    if max_movies and max_movies > 0 and len(new_movie_urls) > max_movies:
         new_movie_urls = new_movie_urls[:max_movies]
         logger.info(f"Limiting to {max_movies} movies for this request to prevent timeout")
     
     # If no new movies, return existing ones
     if not new_movie_urls:
         logger.info("No new movies found, keeping existing movie data")
+        if progress_callback:
+            progress_callback(
+                {
+                    "phase": "completed",
+                    "message": "No new movies found",
+                    "processed_movies": 0,
+                    "total_movies": 0,
+                }
+            )
         return movies
     
     # Get all ratings
     ratings = get_user_ratings(username)
+
+    total_to_process = len(new_movie_urls)
+    processed_movies = 0
+    if progress_callback:
+        progress_callback(
+            {
+                "phase": "processing_movies",
+                "message": "Processing movie pages",
+                "processed_movies": processed_movies,
+                "total_movies": total_to_process,
+            }
+        )
     
     # Process movies in batches to avoid rate limiting
     for i in range(0, len(new_movie_urls), batch_size):
@@ -819,6 +901,16 @@ def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies:
             movie_data = process_movie_data(url, username, rating)
             if movie_data:
                 movies.append(movie_data)
+            processed_movies += 1
+            if progress_callback:
+                progress_callback(
+                    {
+                        "phase": "processing_movies",
+                        "message": "Processing movie pages",
+                        "processed_movies": processed_movies,
+                        "total_movies": total_to_process,
+                    }
+                )
                 
         # Add a delay between batches
         if i + batch_size < len(new_movie_urls):
@@ -837,6 +929,15 @@ def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies:
         _put_cached_item(cache_item)
     
     logger.info(f"Processed {len(movies)} total movies for {username} ({len(movies) - existing_count} new)")
+    if progress_callback:
+        progress_callback(
+            {
+                "phase": "completed",
+                "message": "Movie refresh complete",
+                "processed_movies": total_to_process,
+                "total_movies": total_to_process,
+            }
+        )
     return movies
 
 def get_movies(search: MoviesSearch) -> List[MovieResult]:
@@ -887,7 +988,11 @@ def get_movies(search: MoviesSearch) -> List[MovieResult]:
     logger.info(f"Returning {len(movies_to_cache)} movies")
     return [MovieResult(**movie) for movie in movies_to_cache]
 
-def backfill_movies(username: str, force: bool = False) -> Dict[str, Any]:
+def backfill_movies(
+    username: str,
+    force: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
     """
     Force a complete refresh of all movies for a user.
     
@@ -907,12 +1012,23 @@ def backfill_movies(username: str, force: bool = False) -> Dict[str, Any]:
         existing_item = _get_cached_item(username)
         
         if existing_item and not force:
-            # User exists and force=False
-            movie_count = len(existing_item.get('movies', []))
-            logger.info(f"User {username} already exists with {movie_count} movies. Use force=True to override.")
+            # Keep existing and perform a full incremental refresh.
+            existing_movies = existing_item.get("movies", [])
+            logger.info(
+                "User %s already exists with %s movies. Running incremental refresh.",
+                username,
+                len(existing_movies),
+            )
+            movies = get_all_movies(
+                username,
+                existing_movies=existing_movies,
+                max_movies=0,
+                progress_callback=progress_callback,
+            )
+            movie_count = len(movies)
             return {
-                'success': False,
-                'message': f"User {username} already exists with {movie_count} movies. Use force=True to override.",
+                'success': True,
+                'message': f"Successfully refreshed {movie_count} movies for {username}",
                 'count': movie_count
             }
         
@@ -923,7 +1039,7 @@ def backfill_movies(username: str, force: bool = False) -> Dict[str, Any]:
         
         # Perform a full fetch of all movies
         logger.info(f"Fetching all movies for {username}")
-        movies = get_all_movies(username)
+        movies = get_all_movies(username, max_movies=0, progress_callback=progress_callback)
         movie_count = len(movies)
         
         logger.info(f"Backfill complete for {username}: {movie_count} movies processed")
