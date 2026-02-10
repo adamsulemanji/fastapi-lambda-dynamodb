@@ -5,8 +5,8 @@ uvicorn
 bs4
 requests
 pydantic[email]
+email-validator
 jose
 python-jose
 aiohttp
 httpx
-asyncio

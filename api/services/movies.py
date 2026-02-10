@@ -4,10 +4,14 @@ import boto3
 import requests
 import logging
 import random
+import re
 import asyncio
 import aiohttp
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Tuple, Dict, Any
+from xml.etree import ElementTree as ET
 from bs4 import BeautifulSoup
 from schemas.movies import MoviesSearch, MovieResult
 
@@ -32,6 +36,402 @@ SEARCHING_DELAY = 3
 REQUEST_TIMEOUT = 30  # Timeout for individual requests
 BATCH_SIZE = 5  # Process movies in smaller batches
 MAX_MOVIES_PER_REQUEST = 50  # Limit movies processed per API call
+RSS_DIRECTOR_ENRICH_LIMIT = 15
+LETTERBOXD_NS = "https://letterboxd.com"
+WATCHED_DATE_PATTERN = re.compile(r"^Watched on (?P<date>.+)\.$")
+WATCHED_SHORT_DATE_PATTERN = re.compile(r"^Watched (?P<date>\d{1,2} [A-Za-z]{3} \d{4})$")
+REVIEWED_ON_PATTERN = re.compile(r"^Reviewed on (?P<date>.+)$")
+
+def _extract_movie_urls_from_page(page_soup: BeautifulSoup) -> List[str]:
+    """
+    Extract all movie links from a Letterboxd listing page.
+    Uses attribute selectors so minor DOM wrapper changes don't break parsing.
+    """
+    urls: List[str] = []
+    seen = set()
+    selectors = [
+        "ul.poster-list li div[data-target-link]",
+        "li.poster-container div[data-target-link]",
+    ]
+
+    for selector in selectors:
+        for node in page_soup.select(selector):
+            target_link = node.get("data-target-link")
+            if not target_link:
+                continue
+            movie_url = DOMAIN + target_link.lstrip("/")
+            if "/film/" not in movie_url or movie_url in seen:
+                continue
+            seen.add(movie_url)
+            urls.append(movie_url)
+
+        if urls:
+            break
+
+    return urls
+
+def _get_next_page_url(page_soup: BeautifulSoup) -> Optional[str]:
+    """
+    Return the absolute URL for the next pagination page, if present.
+    """
+    next_link = page_soup.select_one("div.pagination a.next[href], a.next[href]")
+    if not next_link:
+        return None
+
+    href = next_link.get("href")
+    if not href:
+        return None
+
+    return DOMAIN + href.lstrip("/")
+
+def _normalize_review_url_to_film_url(username: str, url: str) -> str:
+    """
+    Convert a user review URL (/username/film/<slug>/) to a canonical film URL.
+    """
+    user_review_prefix = f"{DOMAIN}{username}/film/"
+    if url.startswith(user_review_prefix):
+        slug = url[len(user_review_prefix):].strip("/")
+        if slug:
+            return f"{DOMAIN}film/{slug}/"
+    return url
+
+def _clean_json_ld_text(raw_text: str) -> str:
+    """
+    Remove common comment wrappers around JSON-LD content.
+    """
+    json_text = (raw_text or "").strip()
+    if json_text.startswith("/*"):
+        json_text = json_text.split("*/", 1)[-1].strip()
+        json_text = json_text.split("/*", 1)[0].strip()
+    return json_text
+
+def _get_movie_schema(movie_soup: BeautifulSoup) -> Optional[Dict[str, Any]]:
+    """
+    Parse the film page JSON-LD payload.
+    """
+    script_tag = movie_soup.find("script", attrs={"type": "application/ld+json"})
+    if script_tag is None:
+        return None
+
+    try:
+        json_text = _clean_json_ld_text(script_tag.text)
+        parsed = json.loads(json_text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception as exc:
+        logger.error("Error parsing movie JSON-LD: %s", exc)
+    return None
+
+def _extract_directors_from_schema(schema: Optional[Dict[str, Any]]) -> List[str]:
+    """
+    Extract director names from JSON-LD schema.
+    """
+    if not schema:
+        return []
+
+    director_data = schema.get("director")
+    if not director_data:
+        return []
+
+    if not isinstance(director_data, list):
+        director_data = [director_data]
+
+    directors: List[str] = []
+    for person in director_data:
+        if isinstance(person, dict):
+            name = person.get("name")
+        elif isinstance(person, str):
+            name = person.strip()
+        else:
+            name = None
+        if name and name not in directors:
+            directors.append(name)
+
+    return directors
+
+def _extract_release_year_from_schema(schema: Optional[Dict[str, Any]]) -> Optional[str]:
+    """
+    Extract release year from available JSON-LD date fields.
+    """
+    if not schema:
+        return None
+
+    for field_name in ("datePublished", "dateCreated"):
+        field_value = schema.get(field_name)
+        if isinstance(field_value, str) and len(field_value) >= 4 and field_value[:4].isdigit():
+            return field_value[:4]
+
+    released_event = schema.get("releasedEvent")
+    if isinstance(released_event, dict):
+        released_event = [released_event]
+
+    if isinstance(released_event, list):
+        for event in released_event:
+            if not isinstance(event, dict):
+                continue
+            start_date = event.get("startDate")
+            if isinstance(start_date, str) and len(start_date) >= 4 and start_date[:4].isdigit():
+                return start_date[:4]
+
+    return None
+
+def _parse_rss_title(raw_title: str) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    Parse RSS title text into movie title, release year, and rating.
+    Example: "Marty Supreme, 2025 - ★★★★"
+    """
+    title_text = (raw_title or "").strip()
+    rating: Optional[str] = None
+
+    if " - " in title_text:
+        maybe_title, maybe_rating = title_text.rsplit(" - ", 1)
+        if any(symbol in maybe_rating for symbol in ("★", "½")):
+            title_text = maybe_title.strip()
+            rating = maybe_rating.strip()
+
+    release_year: Optional[str] = None
+    year_match = re.search(r",\s*(\d{4})$", title_text)
+    if year_match:
+        release_year = year_match.group(1)
+        title_text = title_text[:year_match.start()].strip()
+
+    return title_text or "Unknown Title", release_year, rating
+
+def _parse_review_date_from_watched_text(text: str) -> Optional[str]:
+    """
+    Parse "Watched on Monday December 15, 2025." into ISO date.
+    """
+    match = WATCHED_DATE_PATTERN.match((text or "").strip())
+    if not match:
+        return None
+
+    raw_date = match.group("date")
+    try:
+        return datetime.strptime(raw_date, "%A %B %d, %Y").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+def _parse_date_text_to_iso(date_text: str) -> Optional[str]:
+    """
+    Parse multiple date formats encountered on Letterboxd pages/feeds.
+    """
+    value = (date_text or "").strip().rstrip(".")
+    if not value:
+        return None
+
+    for fmt in ("%A %B %d, %Y", "%d %b %Y", "%a, %d %b %Y %H:%M:%S %z"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            return parsed.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+def _extract_review_date_from_text(text: str) -> Optional[str]:
+    """
+    Extract review/watch date from common textual patterns.
+    """
+    normalized = (text or "").strip()
+    if not normalized:
+        return None
+
+    watched_long = _parse_review_date_from_watched_text(normalized)
+    if watched_long:
+        return watched_long
+
+    watched_short = WATCHED_SHORT_DATE_PATTERN.match(normalized)
+    if watched_short:
+        return _parse_date_text_to_iso(watched_short.group("date"))
+
+    reviewed_on = REVIEWED_ON_PATTERN.match(normalized)
+    if reviewed_on:
+        return _parse_date_text_to_iso(reviewed_on.group("date"))
+
+    return None
+
+def _extract_review_date_from_rss_item(item: ET.Element, description_soup: BeautifulSoup) -> Optional[str]:
+    """
+    Pull review/watch date from structured RSS fields first, then description text.
+    """
+    watched_date = item.findtext(f"{{{LETTERBOXD_NS}}}watchedDate")
+    if watched_date:
+        return watched_date.strip()
+
+    pub_date = item.findtext("pubDate")
+    if pub_date:
+        try:
+            return parsedate_to_datetime(pub_date).date().isoformat()
+        except Exception:
+            parsed_pub = _parse_date_text_to_iso(pub_date)
+            if parsed_pub:
+                return parsed_pub
+
+    for paragraph in description_soup.find_all("p"):
+        date_from_text = _extract_review_date_from_text(paragraph.get_text(" ", strip=True))
+        if date_from_text:
+            return date_from_text
+
+    return None
+
+def _fetch_movie_page_metadata(movie_url: str) -> Dict[str, Any]:
+    """
+    Best-effort film page fetch for director/year enrichment.
+    Uses retries=0 to avoid long request stalls during fallback mode.
+    """
+    response = make_request(movie_url, retries=0)
+    if response is None or response.status_code != 200:
+        return {}
+
+    movie_soup = BeautifulSoup(response.content, "html.parser")
+    return {
+        "director": get_movie_director(movie_soup),
+        "release_year": get_release_year(movie_soup),
+        "poster_url": get_movie_poster_url(movie_soup),
+    }
+
+def _is_unknown_director_value(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    cleaned = [str(item).strip() for item in value]
+    return cleaned == ["Unknown Director"]
+
+def _extract_movies_from_rss(username: str, max_movies: int = MAX_MOVIES_PER_REQUEST) -> List[Dict[str, Any]]:
+    """
+    Fallback parser for Letterboxd RSS feed when HTML pages are blocked.
+    """
+    rss_url = f"{DOMAIN}{username}/rss/"
+    logger.info("Attempting RSS fallback for %s using %s", username, rss_url)
+    response = make_request(rss_url)
+    if response is None:
+        logger.error("RSS fallback failed for %s: no HTTP response", username)
+        return []
+
+    if response.status_code != 200:
+        logger.error("RSS fallback failed for %s: status %s", username, response.status_code)
+        return []
+
+    try:
+        root = ET.fromstring(response.content)
+    except ET.ParseError as exc:
+        logger.error("RSS fallback parse failed for %s: %s", username, exc)
+        return []
+
+    channel = root.find("channel")
+    if channel is None:
+        return []
+
+    movies: List[Dict[str, Any]] = []
+    for index, item in enumerate(channel.findall("item")[:max_movies]):
+        raw_title = item.findtext("title", default="")
+        review_url = item.findtext("link", default="")
+        description_html = item.findtext("description", default="")
+        parsed_title, parsed_release_year, rating = _parse_rss_title(raw_title)
+
+        description_soup = BeautifulSoup(description_html, "html.parser")
+        poster_tag = description_soup.find("img")
+        poster_url = poster_tag.get("src") if poster_tag else None
+
+        review_date = _extract_review_date_from_rss_item(item, description_soup)
+        release_year = item.findtext(f"{{{LETTERBOXD_NS}}}filmYear") or parsed_release_year
+
+        review_text = None
+        for paragraph in description_soup.find_all("p"):
+            text = paragraph.get_text(" ", strip=True)
+            if not text:
+                continue
+            parsed_date = _extract_review_date_from_text(text)
+            if parsed_date and review_date is None:
+                review_date = parsed_date
+                continue
+            if review_text is None:
+                review_text = text
+
+        film_url = _normalize_review_url_to_film_url(username, review_url)
+        directors = ["Unknown Director"]
+        if film_url and index < RSS_DIRECTOR_ENRICH_LIMIT:
+            metadata = _fetch_movie_page_metadata(film_url)
+            metadata_directors = metadata.get("director")
+            if metadata_directors and not _is_unknown_director_value(metadata_directors):
+                directors = metadata_directors
+            if not release_year and metadata.get("release_year"):
+                release_year = metadata["release_year"]
+            if not poster_url and metadata.get("poster_url"):
+                poster_url = metadata["poster_url"]
+
+        movies.append({
+            "title": parsed_title,
+            "letterboxd_url": film_url or review_url,
+            "poster_url": poster_url,
+            "rating": rating,
+            "director": directors,
+            "review": review_text,
+            "release_year": release_year,
+            "review_date": review_date,
+            "review_url": review_url or None,
+        })
+
+    logger.info("RSS fallback returned %s movie(s) for %s", len(movies), username)
+    return movies
+
+def _merge_rss_with_cached(rss_movies: List[Dict[str, Any]], cached_movies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Keep RSS ordering for newest entries and preserve extra fields from cache.
+    """
+    cached_by_url: Dict[str, Dict[str, Any]] = {}
+    for movie in cached_movies:
+        movie_url = movie.get("letterboxd_url")
+        if movie_url:
+            cached_by_url[movie_url] = dict(movie)
+
+    merged: List[Dict[str, Any]] = []
+    for rss_movie in rss_movies:
+        movie_url = rss_movie.get("letterboxd_url")
+        base = cached_by_url.pop(movie_url, {}) if movie_url else {}
+        merged_movie = dict(base)
+        for key, value in rss_movie.items():
+            if key == "director" and _is_unknown_director_value(value):
+                existing_director = merged_movie.get("director")
+                if existing_director and not _is_unknown_director_value(existing_director):
+                    continue
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            if isinstance(value, list) and not value:
+                continue
+            merged_movie[key] = value
+        merged.append(merged_movie)
+
+    merged.extend(cached_by_url.values())
+    return merged
+
+def _get_cached_item(username: str) -> Optional[Dict[str, Any]]:
+    """
+    Read movie cache from DynamoDB, returning None if storage is unavailable.
+    """
+    try:
+        return table.get_item(Key={'username': username}).get('Item')
+    except Exception as exc:
+        logger.warning("DynamoDB cache read failed for %s: %s", username, exc)
+        return None
+
+def _put_cached_item(cache_item: Dict[str, Any]) -> None:
+    """
+    Best-effort cache write; failures should not break API responses.
+    """
+    try:
+        table.put_item(Item=cache_item)
+    except Exception as exc:
+        logger.warning("DynamoDB cache write failed for %s: %s", cache_item.get('username'), exc)
+
+def _delete_cached_item(username: str) -> None:
+    """
+    Best-effort cache delete for force backfills.
+    """
+    try:
+        table.delete_item(Key={'username': username})
+    except Exception as exc:
+        logger.warning("DynamoDB cache delete failed for %s: %s", username, exc)
 
 def make_request(url: str, retries: int = MAX_RETRIES) -> Optional[requests.Response]:
     """
@@ -91,49 +491,38 @@ def get_all_movie_urls(username: str, max_pages: int = 20) -> List[str]:
         
         try:
             response = make_request(current_url)
-            if not response or response.status_code != 200:
-                logger.error(f"Error retrieving URL: {current_url}, status: {response.status_code if response else 'None'}")
+            if response is None:
+                logger.error("Error retrieving URL: %s, no HTTP response", current_url)
+                break
+            if response.status_code != 200:
+                logger.error("Error retrieving URL: %s, status: %s", current_url, response.status_code)
+                if response.status_code == 403:
+                    logger.warning("Letterboxd blocked HTML scraping (403). RSS fallback will be used if available.")
                 break
                 
             soup = BeautifulSoup(response.content, "html.parser")
-            film_list = soup.find('ul', class_='poster-list')
-            
-            if film_list is None:
-                logger.error(f"No film list found at: {current_url}")
-                break
-                
-            # Extract film URLs from this page
-            films = film_list.find_all('li')
-            page_urls = []
-            
-            logger.info(f"Found {len(films)} films on page {current_page}")
-            
-            for film in films:
-                film_div = film.find('div')
-                if film_div:
-                    film_card = film_div.get('data-target-link')
-                    if film_card:
-                        page_urls.append(DOMAIN + film_card.lstrip('/'))
+            page_urls = _extract_movie_urls_from_page(soup)
+
+            poster_items = soup.select("ul.poster-list li, li.poster-container")
+            logger.info(f"Found {len(poster_items)} poster item(s) on page {current_page}")
+            if poster_items and not page_urls:
+                logger.warning(
+                    "Found poster items but no movie links on page %s (%s). Markup may have changed.",
+                    current_page,
+                    current_url,
+                )
             
             # Add URLs from this page
             all_film_urls.extend(page_urls)
             logger.info(f"Added {len(page_urls)} film URLs from page {current_page}")
             
             # Look for next page link
-            pagination = soup.find('div', class_='pagination')
-            if pagination:
-                next_link = pagination.find('a', class_='next')
-                if next_link and 'href' in next_link.attrs:
-                    next_page = next_link['href']
-                    current_url = DOMAIN + next_page.lstrip('/')
-                    current_page += 1
-                else:
-                    # No more pages
-                    logger.info("No more pagination links found, reached end of list")
-                    break
+            next_url = _get_next_page_url(soup)
+            if next_url:
+                current_url = next_url
+                current_page += 1
             else:
-                # No pagination found
-                logger.info("No pagination found, single page of results")
+                logger.info("No more pagination links found, reached end of list")
                 break
                 
             if not page_urls:
@@ -166,14 +555,17 @@ def get_user_ratings(username: str) -> Dict[str, str]:
         
         try:
             response = make_request(current_url)
-            if not response or response.status_code != 200:
-                logger.error(f"Error retrieving ratings page: {current_url}")
+            if response is None:
+                logger.error("Error retrieving ratings page: %s, no HTTP response", current_url)
+                break
+            if response.status_code != 200:
+                logger.error("Error retrieving ratings page: %s, status: %s", current_url, response.status_code)
                 break
                 
             soup = BeautifulSoup(response.content, "html.parser")
             
             # Find all film items on the page
-            film_items = soup.select('li.poster-container')
+            film_items = soup.select('li.poster-container') or soup.select('ul.poster-list li')
             
             for item in film_items:
                 try:
@@ -196,15 +588,10 @@ def get_user_ratings(username: str) -> Dict[str, str]:
             logger.info(f"Found {len(ratings)} ratings so far")
             
             # Check for next page
-            pagination = soup.find('div', class_='pagination')
-            if pagination:
-                next_link = pagination.find('a', class_='next')
-                if next_link and 'href' in next_link.attrs:
-                    next_page = next_link['href']
-                    current_url = DOMAIN + next_page.lstrip('/')
-                    current_page += 1
-                else:
-                    break
+            next_url = _get_next_page_url(soup)
+            if next_url:
+                current_url = next_url
+                current_page += 1
             else:
                 break
                 
@@ -219,20 +606,10 @@ def get_movie_poster_url(movie_soup: BeautifulSoup) -> Optional[str]:
     """
     Extract the poster URL from the movie page's JSON-LD script.
     """
-    script_tag = movie_soup.select_one('script[type="application/ld+json"]')
-    if script_tag is None:
+    json_obj = _get_movie_schema(movie_soup)
+    if json_obj is None:
         return None
-    try:
-        json_text = script_tag.text.strip()
-        if json_text.startswith("/*"):
-            # Remove comment markers if present
-            json_text = json_text.split("*/", 1)[-1].strip()
-            json_text = json_text.split("/*", 1)[0].strip()
-        json_obj = json.loads(json_text)
-        return json_obj.get('image', None)
-    except Exception as e:
-        logger.error(f"Error parsing JSON from movie page: {e}")
-        return None
+    return json_obj.get("image", None)
 
 def get_movie_title(movie_soup: BeautifulSoup) -> str:
     """
@@ -255,20 +632,10 @@ def get_release_year(movie_soup: BeautifulSoup) -> Optional[str]:
             if year_element:
                 return year_element.get_text(strip=True).strip('()')
         
-        # Try to get from schema data
-        script_tag = movie_soup.select_one('script[type="application/ld+json"]')
-        if script_tag:
-            try:
-                json_text = script_tag.text.strip()
-                if json_text.startswith("/*"):
-                    # Remove comment markers if present
-                    json_text = json_text.split("*/", 1)[-1].strip()
-                    json_text = json_text.split("/*", 1)[0].strip()
-                json_obj = json.loads(json_text)
-                if 'datePublished' in json_obj:
-                    return json_obj['datePublished'][:4]  # Get just the year
-            except:
-                pass
+        # Try JSON-LD release fields
+        schema_year = _extract_release_year_from_schema(_get_movie_schema(movie_soup))
+        if schema_year:
+            return schema_year
                 
         return None
     except Exception as e:
@@ -279,6 +646,10 @@ def get_movie_director(movie_soup: BeautifulSoup) -> List[str]:
     """
     Extract the director(s) from the movie page.
     """
+    schema_directors = _extract_directors_from_schema(_get_movie_schema(movie_soup))
+    if schema_directors:
+        return schema_directors
+
     credits = movie_soup.find("p", class_="credits")
     if credits:
         director_span = credits.find("span", class_="directorlist")
@@ -287,6 +658,17 @@ def get_movie_director(movie_soup: BeautifulSoup) -> List[str]:
             directors = [tag.get_text(strip=True) for tag in director_tags]
             if directors:
                 return directors
+
+    # Newer layouts can omit the legacy credits classes but keep /director/ links.
+    director_links = movie_soup.select("a[href*='/director/']")
+    directors = []
+    for link in director_links:
+        director_name = link.get_text(strip=True)
+        if director_name and director_name not in directors:
+            directors.append(director_name)
+    if directors:
+        return directors
+
     return ["Unknown Director"]
 
 def get_movie_review(film_id: str, username: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -303,7 +685,7 @@ def get_movie_review(film_id: str, username: str) -> Tuple[Optional[str], Option
         logger.info(f"Checking for review at {review_url}")
         review_response = make_request(review_url)
         
-        if review_response and review_response.status_code == 200:
+        if review_response is not None and review_response.status_code == 200:
             review_soup = BeautifulSoup(review_response.content, "html.parser")
             review_div = review_soup.find('div', class_='js-review-body')
             if review_div:
@@ -313,6 +695,12 @@ def get_movie_review(film_id: str, username: str) -> Tuple[Optional[str], Option
                 date_meta = review_soup.find('meta', property='og:article:published_time')
                 if date_meta and date_meta.get('content'):
                     review_date = date_meta.get('content').split('T')[0]
+                else:
+                    for paragraph in review_soup.find_all("p"):
+                        parsed_date = _extract_review_date_from_text(paragraph.get_text(" ", strip=True))
+                        if parsed_date:
+                            review_date = parsed_date
+                            break
                 
                 return review_text, review_date, review_url
         
@@ -332,8 +720,11 @@ def process_movie_data(movie_url: str, username: str, rating: Optional[str] = No
     
     try:
         response = make_request(movie_url)
-        if not response or response.status_code != 200:
-            logger.error(f"Error retrieving film page: {movie_url}, status: {response.status_code if response else 'None'}")
+        if response is None:
+            logger.error("Error retrieving film page: %s, no HTTP response", movie_url)
+            return None
+        if response.status_code != 200:
+            logger.error("Error retrieving film page: %s, status: %s", movie_url, response.status_code)
             return None
             
         film_id = movie_url.split('/')[-2]
@@ -386,6 +777,20 @@ def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies:
     # Get all movie URLs
     movie_urls = get_all_movie_urls(username)
     logger.info(f"Found {len(movie_urls)} total movies on Letterboxd")
+
+    if not movie_urls:
+        rss_movies = _extract_movies_from_rss(username, max_movies=max_movies)
+        if rss_movies:
+            logger.info("Using RSS fallback movie data for %s", username)
+            merged_movies = _merge_rss_with_cached(rss_movies, movies)
+            cache_item = {
+                'username': username,
+                'movies': merged_movies,
+                'last_updated': int(time.time()),
+                'is_complete': False
+            }
+            _put_cached_item(cache_item)
+            return merged_movies
     
     # Filter out movies we already have
     new_movie_urls = [url for url in movie_urls if url not in existing_urls]
@@ -429,7 +834,7 @@ def get_all_movies(username: str, batch_size: int = BATCH_SIZE, existing_movies:
             'last_updated': int(time.time()),
             'is_complete': True
         }
-        table.put_item(Item=cache_item)
+        _put_cached_item(cache_item)
     
     logger.info(f"Processed {len(movies)} total movies for {username} ({len(movies) - existing_count} new)")
     return movies
@@ -446,7 +851,7 @@ def get_movies(search: MoviesSearch) -> List[MovieResult]:
     logger.info(f"Retrieving movies for: {username} (fast_mode: {fast_mode})")
     
     # Check for a cached item
-    cached_item = table.get_item(Key={'username': username}).get('Item')
+    cached_item = _get_cached_item(username)
     if cached_item:
         last_updated = cached_item.get('last_updated', 0)
         cached_movies = cached_item.get('movies', [])
@@ -499,7 +904,7 @@ def backfill_movies(username: str, force: bool = False) -> Dict[str, Any]:
     
     try:
         # Check if user already exists in database
-        existing_item = table.get_item(Key={'username': username}).get('Item')
+        existing_item = _get_cached_item(username)
         
         if existing_item and not force:
             # User exists and force=False
@@ -514,7 +919,7 @@ def backfill_movies(username: str, force: bool = False) -> Dict[str, Any]:
         if existing_item and force:
             # User exists but we're forcing a refresh - delete the existing item
             logger.info(f"Forcing refresh for {username}, deleting existing record")
-            table.delete_item(Key={'username': username})
+            _delete_cached_item(username)
         
         # Perform a full fetch of all movies
         logger.info(f"Fetching all movies for {username}")

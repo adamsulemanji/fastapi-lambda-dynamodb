@@ -162,6 +162,23 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
       handler: fastApiLambda_prod,
       proxy: true,
       description: "APIGateway for FastAPI Lambda DDB docker image test service",
+      defaultCorsPreflightOptions: {
+        allowOrigins: [
+          "https://adamsulemanji.com",
+          "https://www.adamsulemanji.com",
+          "https://adamsulemanji.vercel.app"
+        ],
+        allowMethods: apigateway.Cors.ALL_METHODS,
+        allowHeaders: apigateway.Cors.DEFAULT_HEADERS.concat([
+          'Content-Type',
+          'X-Amz-Date',
+          'Authorization',
+          'X-Api-Key',
+          'X-Amz-Security-Token',
+          'X-Amz-User-Agent'
+        ]),
+        allowCredentials: true,
+      },
     });
 
     // ========================================================================
@@ -187,7 +204,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
           AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
         },
-        architecture: lambda.Architecture.X86_64,
+        architecture: lambda.Architecture.X86_64, 
       }
     );
 
@@ -201,6 +218,25 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
       handler: fastApiLambda_dev,
       proxy: true,
       description: "APIGateway for FastAPI Lambda DDB docker image test service",
+      defaultCorsPreflightOptions: {
+        allowOrigins: [
+          "https://adamsulemanji.com",
+          "https://www.adamsulemanji.com",
+          "https://adamsulemanji.vercel.app",
+          "http://localhost:3000",
+          "http://localhost:8000"
+        ],
+        allowMethods: apigateway.Cors.ALL_METHODS,
+        allowHeaders: apigateway.Cors.DEFAULT_HEADERS.concat([
+          'Content-Type',
+          'X-Amz-Date',
+          'Authorization',
+          'X-Api-Key',
+          'X-Amz-Security-Token',
+          'X-Amz-User-Agent'
+        ]),
+        allowCredentials: true,
+      },
     });
 
     // ========================================================================
