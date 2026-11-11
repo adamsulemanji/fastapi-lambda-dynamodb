@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
 
 import boto3
@@ -42,6 +43,10 @@ def _safe_int(value: Any, default: int) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _tiles_prefix(job_id: str) -> str:
+    return f"jobs/{job_id}/tiles/"
 
 
 def _best_grid(available_tiles: int) -> Dict[str, int]:
@@ -152,7 +157,12 @@ def build_manifest_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any
         "bootstrap_movies": bootstrap_movies,
         "manifest_key": manifest_key,
         "total_items": total_items,
-        "movies": manifest_movies,
+        # Step Functions caps state payloads at 256 KB, so pass only what each
+        # Map iteration needs; the full manifest is in S3.
+        "movies": [
+            {"source_index": movie["source_index"], "poster_url": movie["poster_url"]}
+            for movie in manifest_movies
+        ],
     }
 
 
@@ -167,12 +177,9 @@ def process_poster_item_handler(event: Dict[str, Any], context: Any) -> Dict[str
     source_index = _safe_int(movie.get("source_index"), 0)
     poster_url = movie.get("poster_url")
 
-    result: Dict[str, Any] = {
-        "source_index": source_index,
-        "title": movie.get("title"),
-        "letterboxd_url": movie.get("letterboxd_url"),
-        "skipped": True,
-    }
+    # Keep this small: results are discarded by the workflow, the render step
+    # discovers finished tiles by listing S3.
+    result: Dict[str, Any] = {"source_index": source_index, "skipped": True}
 
     try:
         if not poster_url:
@@ -186,11 +193,7 @@ def process_poster_item_handler(event: Dict[str, Any], context: Any) -> Dict[str
             image = raw_image.convert("RGB")
             tile = ImageOps.fit(image, (TILE_WIDTH, TILE_HEIGHT), method=RESAMPLE)
 
-        dominant_color = tile.resize((1, 1), resample=RESAMPLE).getpixel((0, 0))
-        r, g, b = dominant_color
-        hue, sat, val = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
-
-        tile_key = f"jobs/{job_id}/tiles/{source_index}.jpg"
+        tile_key = f"{_tiles_prefix(job_id)}{source_index}.jpg"
         buffer = io.BytesIO()
         tile.save(buffer, format="JPEG", quality=88, optimize=True)
         buffer.seek(0)
@@ -201,15 +204,7 @@ def process_poster_item_handler(event: Dict[str, Any], context: Any) -> Dict[str
             ContentType="image/jpeg",
         )
 
-        result.update(
-            {
-                "tile_key": tile_key,
-                "h": hue,
-                "s": sat,
-                "v": val,
-                "skipped": False,
-            }
-        )
+        result["skipped"] = False
     except Exception as exc:
         logger.warning("Skipping poster item for job %s (index=%s): %s", job_id, source_index, exc)
         result["error"] = str(exc)
@@ -232,51 +227,52 @@ def render_poster_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]
         raise RuntimeError("MOVIES_POSTER_OUTPUT_BUCKET_NAME is not configured")
 
     job_id = event["job_id"]
-    processed_items = event.get("processed_items", [])
-    if not isinstance(processed_items, list):
-        processed_items = []
 
-    valid_items = [
-        item
-        for item in processed_items
-        if isinstance(item, dict) and not item.get("skipped") and item.get("tile_key")
-    ]
-    if not valid_items:
+    # Tiles are discovered from S3 rather than passed through workflow state,
+    # which keeps the Step Functions payload small for large collections.
+    prefix = _tiles_prefix(job_id)
+    tile_keys: Dict[int, str] = {}
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=poster_temp_bucket_name, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            stem = obj["Key"][len(prefix):].rsplit(".", 1)[0]
+            if stem.isdigit():
+                tile_keys[int(stem)] = obj["Key"]
+    if not tile_keys:
         raise ValueError("No valid posters available to render")
 
     # Choose a fully filled, poster-shaped grid; drop the oldest movies that don't fit.
-    layout = _best_grid(len(valid_items))
+    layout = _best_grid(len(tile_keys))
     columns = layout["columns"]
     rows = layout["rows"]
     movie_tiles = columns * rows
-    dropped_tiles = len(valid_items) - movie_tiles
+    dropped_tiles = len(tile_keys) - movie_tiles
     blank_tiles = 0
 
     # source_index follows the cached movie order (newest first), so keep the lowest indexes.
-    kept_items = sorted(valid_items, key=lambda item: _safe_int(item.get("source_index"), 0))[:movie_tiles]
+    kept_indexes = sorted(tile_keys)[:movie_tiles]
 
-    sorted_items = sorted(
-        kept_items,
-        key=lambda item: (
-            float(item.get("h", 0.0)),
-            float(item.get("s", 0.0)),
-            float(item.get("v", 0.0)),
-            _safe_int(item.get("source_index"), 0),
-        ),
-    )
+    def load_tile(source_index: int) -> Dict[str, Any]:
+        tile_bytes = s3.get_object(Bucket=poster_temp_bucket_name, Key=tile_keys[source_index])["Body"].read()
+        with Image.open(io.BytesIO(tile_bytes)) as tile_img:
+            tile = tile_img.convert("RGB")
+        r, g, b = tile.resize((1, 1), resample=RESAMPLE).getpixel((0, 0))
+        hue, sat, val = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+        return {"source_index": source_index, "tile": tile, "color": (hue, sat, val)}
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        tiles = list(pool.map(load_tile, kept_indexes))
+
+    # Arrange by dominant colour (hue, then saturation, then brightness).
+    tiles.sort(key=lambda item: (item["color"], item["source_index"]))
 
     canvas = Image.new("RGB", (columns * TILE_WIDTH, rows * TILE_HEIGHT), color=(14, 14, 18))
 
-    for position, item in enumerate(sorted_items):
-        tile_key = item["tile_key"]
-        tile_obj = s3.get_object(Bucket=poster_temp_bucket_name, Key=tile_key)
-        tile_bytes = tile_obj["Body"].read()
-        with Image.open(io.BytesIO(tile_bytes)) as tile_img:
-            tile = tile_img.convert("RGB")
-
+    for position, item in enumerate(tiles):
         x = (position % columns) * TILE_WIDTH
         y = (position // columns) * TILE_HEIGHT
-        canvas.paste(tile, (x, y))
+        canvas.paste(item["tile"], (x, y))
+    del tiles
 
     output_key = f"posters/{job_id}.png"
     output_buffer = io.BytesIO()

@@ -541,7 +541,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 
     const processPosterMap = new sfn.Map(this, "ProcessPosterMap", {
       itemsPath: sfn.JsonPath.stringAt("$.movies"),
-      resultPath: "$.processed_items",
+      // Results are not needed downstream (the render step lists tiles in S3);
+      // discarding them keeps the state under Step Functions' 256 KB limit.
+      resultPath: sfn.JsonPath.DISCARD,
       itemSelector: {
         "job_id.$": "$.job_id",
         "username.$": "$.username",
@@ -560,7 +562,6 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         "username.$": "$.username",
         "movie_count.$": "$.movie_count",
         "total_items.$": "$.total_items",
-        "processed_items.$": "$.processed_items",
       }),
       payloadResponseOnly: true,
     });

@@ -29,6 +29,9 @@ TERMINAL_STATUSES = {"SUCCEEDED", "FAILED"}
 JOB_TTL_SECONDS = 60 * 60 * 24 * 14
 
 
+ACTIVE_JOB_MAX_AGE_SECONDS = 35 * 60
+
+
 def _now_epoch() -> int:
     return int(time.time())
 
@@ -132,8 +135,11 @@ def _find_active_job_for_username(username: str) -> Optional[Dict[str, Any]]:
         logger.warning("Poster active-job lookup failed for %s: %s", username, exc)
         return None
 
+    # The workflow times out after 30 minutes, so an "active" job older than
+    # that died without reporting back and must not block new jobs.
+    stale_before = _now_epoch() - ACTIVE_JOB_MAX_AGE_SECONDS
     for item in response.get("Items", []):
-        if item.get("status") in ACTIVE_STATUSES:
+        if item.get("status") in ACTIVE_STATUSES and int(item.get("created_at", 0)) >= stale_before:
             return item
     return None
 
