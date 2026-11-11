@@ -1,5 +1,5 @@
 # Use AWS Lambda Python 3.9 base image
-FROM --platform=linux/amd64 public.ecr.aws/lambda/python:3.9
+FROM --platform=linux/amd64 public.ecr.aws/lambda/python:3.12
 
 # Copy requirements and install
 COPY requirements.txt ./

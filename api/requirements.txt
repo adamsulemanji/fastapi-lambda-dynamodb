@@ -4,6 +4,7 @@ boto3
 uvicorn
 bs4
 requests
+curl_cffi
 pydantic[email]
 email-validator
 jose

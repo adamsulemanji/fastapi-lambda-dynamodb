@@ -17,8 +17,8 @@ from services.movie_poster_jobs import create_movie_poster_job, get_movie_poster
 router = APIRouter()
 
 
-def _apply_limit(movies: List[MovieResult], limit: int) -> List[MovieResult]:
-    if limit == 0 or limit >= len(movies):
+def _apply_limit(movies: list, limit: int) -> list:
+    if limit <= 0 or limit >= len(movies):
         return movies
     return movies[:limit]
 
@@ -38,6 +38,23 @@ def _create_poster_job_or_raise(username: str, movie_count: int) -> dict:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception:
         raise HTTPException(status_code=500, detail="Unable to create movie poster job")
+
+
+def _queue_movies_job_with_headers(
+    response: Response,
+    username: str,
+    cache_state: str,
+    raise_non_503: bool,
+) -> None:
+    try:
+        job = _create_job_or_raise(username=username, force=False)
+        response.headers["X-Movies-Job-Id"] = job["job_id"]
+        response.headers["X-Movies-Job-Status"] = job["status"]
+    except HTTPException as exc:
+        if raise_non_503 and exc.status_code != 503:
+            raise
+        response.headers["X-Movies-Job-Status"] = "UNAVAILABLE"
+    response.headers["X-Movies-Cache-State"] = cache_state
 
 
 @router.get("/search", response_model=List[MovieResult])
@@ -63,31 +80,48 @@ def search_movies(
     - fast=false, async_refresh=true: Return cache immediately and queue refresh when stale/missing
     - fast=false, async_refresh=false: Execute synchronous refresh (may be slow)
     """
-    if fast:
-        movies = get_movies(MoviesSearch(username=username, fast_mode=True))
-        return _apply_limit(movies, limit)
-
-    if not async_refresh:
+    if not fast and not async_refresh:
         movies = get_movies(MoviesSearch(username=username, fast_mode=False))
         return _apply_limit(movies, limit)
 
     cache_state = get_cached_movies_state(username)
-    cached_movies = [MovieResult(**movie) for movie in cache_state.get("movies", [])]
-    if cache_state.get("is_stale", True):
-        try:
-            job = _create_job_or_raise(username=username, force=False)
-            response.headers["X-Movies-Job-Id"] = job["job_id"]
-            response.headers["X-Movies-Job-Status"] = job["status"]
+    # Apply the limit before validation so we only build the models we return.
+    cached_movies = [MovieResult(**movie) for movie in _apply_limit(cache_state.get("movies", []), limit)]
+    cache_exists = bool(cache_state.get("exists", False))
+    cache_is_stale = bool(cache_state.get("is_stale", True))
+
+    if fast:
+        if not cache_exists:
+            _queue_movies_job_with_headers(
+                response=response,
+                username=username,
+                cache_state="stale_or_missing",
+                raise_non_503=False,
+            )
+        elif cache_is_stale:
             response.headers["X-Movies-Cache-State"] = "stale_or_missing"
-        except HTTPException as exc:
-            if exc.status_code != 503:
-                raise
-            response.headers["X-Movies-Job-Status"] = "UNAVAILABLE"
-            response.headers["X-Movies-Cache-State"] = "stale_or_missing"
+        else:
+            response.headers["X-Movies-Cache-State"] = "fresh"
+        return cached_movies
+
+    if not cache_exists:
+        _queue_movies_job_with_headers(
+            response=response,
+            username=username,
+            cache_state="stale_or_missing",
+            raise_non_503=False,
+        )
+    elif cache_is_stale:
+        _queue_movies_job_with_headers(
+            response=response,
+            username=username,
+            cache_state="stale_or_missing",
+            raise_non_503=True,
+        )
     else:
         response.headers["X-Movies-Cache-State"] = "fresh"
 
-    return _apply_limit(cached_movies, limit)
+    return cached_movies
 
 
 @router.post("/jobs", response_model=MoviesJobResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -121,10 +155,18 @@ def backfill_movies_route(
 
 
 @router.post("/poster-jobs", response_model=MoviePosterJobResponse, status_code=status.HTTP_202_ACCEPTED)
-def create_movie_poster_job_route(job: MoviePosterJobRequest):
+def create_movie_poster_job_route(response: Response, job: MoviePosterJobRequest):
     """
     Create an async movie poster generation job.
     """
+    cache_state = get_cached_movies_state(job.username)
+    if not cache_state.get("exists", False):
+        _queue_movies_job_with_headers(
+            response=response,
+            username=job.username,
+            cache_state="stale_or_missing",
+            raise_non_503=False,
+        )
     return _create_poster_job_or_raise(username=job.username, movie_count=job.movie_count)
 
 

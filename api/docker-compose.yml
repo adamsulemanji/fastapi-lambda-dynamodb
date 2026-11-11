@@ -17,4 +17,13 @@ services:
       - AWS_REGION_NAME=us-east-1
       - AWS_COGNITO_APP_CLIENT_ID=6ib0lefeskn33ugk4nc08uqtt7
       - AWS_COGNITO_USER_POOL_ID=us-east-1_ETXEnpSV3
-    restart: unless-stopped 
+      - MOVIES_TABLE_NAME=movies
+      - MOVIES_JOBS_TABLE_NAME=movies-jobs
+      - MOVIES_JOBS_USERNAME_INDEX=username-created_at-index
+      - MOVIES_SCRAPE_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/869935106890/FastapiDynamodbLambdaStack-MoviesScrapeQueueF41B82AE-ifsGBqw5wCxt
+      - MOVIES_POSTER_JOBS_TABLE_NAME=movies-poster-jobs
+      - MOVIES_POSTER_JOBS_USERNAME_INDEX=username-created_at-index
+      - MOVIES_POSTER_STATE_MACHINE_ARN=arn:aws:states:us-east-1:869935106890:stateMachine:MoviesPosterStateMachine3E1EE1A7-Wz7AkVtJXKLO
+      - MOVIES_POSTER_OUTPUT_BUCKET_NAME=fastapidynamodblambdastac-moviesposteroutputbucket-hugolyh5nxp2
+      - MOVIES_POSTER_URL_EXPIRATION_SECONDS=604800
+    restart: unless-stopped
