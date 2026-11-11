@@ -130,6 +130,15 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // Holds movie lists that are too large for a single DynamoDB item (400 KB);
+    // the movies table keeps the metadata and a pointer to the object.
+    const moviesCacheBucket = new s3.Bucket(this, "MoviesCacheBucket", {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
     // ========================================================================
     // Cognito User Pool
     // ========================================================================
@@ -233,6 +242,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
           AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
           MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_CACHE_BUCKET_NAME: moviesCacheBucket.bucketName,
           MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
           MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_SCRAPE_QUEUE_URL: moviesScrapeQueue.queueUrl,
@@ -249,6 +259,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     fastApiLambda_prod.addToRolePolicy(cognitoPolicy);
     table_prod.grantReadWriteData(fastApiLambda_prod);
     table_movies.grantReadWriteData(fastApiLambda_prod);
+    moviesCacheBucket.grantReadWrite(fastApiLambda_prod);
     table_movies_jobs.grantReadWriteData(fastApiLambda_prod);
     table_movies_poster_jobs.grantReadWriteData(fastApiLambda_prod);
     moviesScrapeQueue.grantSendMessages(fastApiLambda_prod);
@@ -301,6 +312,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
           AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
           MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_CACHE_BUCKET_NAME: moviesCacheBucket.bucketName,
           MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
           MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_SCRAPE_QUEUE_URL: moviesScrapeQueue.queueUrl,
@@ -317,6 +329,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     fastApiLambda_dev.addToRolePolicy(cognitoPolicy);
     table_dev.grantReadWriteData(fastApiLambda_dev);
     table_movies.grantReadWriteData(fastApiLambda_dev);
+    moviesCacheBucket.grantReadWrite(fastApiLambda_dev);
     table_movies_jobs.grantReadWriteData(fastApiLambda_dev);
     table_movies_poster_jobs.grantReadWriteData(fastApiLambda_dev);
     moviesScrapeQueue.grantSendMessages(fastApiLambda_dev);
@@ -369,6 +382,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         environment: {
           AWS_REGION_NAME: this.region,
           MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_CACHE_BUCKET_NAME: moviesCacheBucket.bucketName,
           MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
           MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
         },
@@ -384,6 +398,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     );
 
     table_movies.grantReadWriteData(moviesWorkerLambda);
+    moviesCacheBucket.grantReadWrite(moviesWorkerLambda);
     table_movies_jobs.grantReadWriteData(moviesWorkerLambda);
     moviesScrapeQueue.grantConsumeMessages(moviesWorkerLambda);
 
@@ -408,6 +423,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         environment: {
           AWS_REGION_NAME: this.region,
           MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_CACHE_BUCKET_NAME: moviesCacheBucket.bucketName,
           MOVIES_POSTER_JOBS_TABLE_NAME: table_movies_poster_jobs.tableName,
           MOVIES_POSTER_TEMP_BUCKET_NAME: moviesPosterTempBucket.bucketName,
         },
@@ -489,6 +505,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     );
 
     table_movies.grantReadData(posterBuildManifestLambda);
+    moviesCacheBucket.grantRead(posterBuildManifestLambda);
     table_movies_poster_jobs.grantReadWriteData(posterBuildManifestLambda);
     table_movies_poster_jobs.grantReadWriteData(posterProcessItemLambda);
     table_movies_poster_jobs.grantReadWriteData(posterRenderLambda);
@@ -701,6 +718,11 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     new cdk.CfnOutput(this, "MoviesPosterJobsTableName", {
       value: table_movies_poster_jobs.tableName,
       description: "DynamoDB table storing poster generation jobs",
+    });
+
+    new cdk.CfnOutput(this, "MoviesCacheBucketName", {
+      value: moviesCacheBucket.bucketName,
+      description: "S3 bucket storing movie lists offloaded from DynamoDB",
     });
 
     new cdk.CfnOutput(this, "MoviesPosterOutputBucketName", {

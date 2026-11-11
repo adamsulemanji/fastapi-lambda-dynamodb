@@ -1,5 +1,6 @@
 import time
 import json
+import gzip
 import boto3
 import logging
 import random
@@ -22,6 +23,14 @@ logger = logging.getLogger(__name__)
 movies_table_name = os.environ.get("MOVIES_TABLE_NAME", "movies")
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(movies_table_name)
+
+# DynamoDB items are capped at 400 KB, so large movie lists are offloaded to S3:
+# the object holds the gzipped movies JSON and the DynamoDB item keeps the
+# metadata plus a pointer (movies_s3_key) to it.
+movies_cache_bucket_name = os.environ.get("MOVIES_CACHE_BUCKET_NAME")
+S3_OFFLOAD_THRESHOLD_BYTES = int(os.environ.get("MOVIES_S3_OFFLOAD_THRESHOLD_BYTES", "300000"))
+MOVIES_S3_KEY_ATTR = "movies_s3_key"
+s3 = boto3.client("s3")
 
 
 DOMAIN = "https://letterboxd.com/"
@@ -438,24 +447,66 @@ def _merge_rss_with_cached(rss_movies: List[Dict[str, Any]], cached_movies: List
     merged.extend(cached_by_url.values())
     return merged
 
-def _get_cached_item(username: str) -> Optional[Dict[str, Any]]:
+def _movies_s3_key(username: str) -> str:
+    return f"movies/{username}.json.gz"
+
+def _get_cached_item(username: str, include_movies: bool = True) -> Optional[Dict[str, Any]]:
     """
-    Read movie cache from DynamoDB, returning None if storage is unavailable.
+    Read movie cache from DynamoDB (following the S3 pointer for offloaded
+    movie lists), returning None if storage is unavailable.
+    Pass include_movies=False to skip the S3 read when only metadata is needed.
     """
     try:
-        return table.get_item(Key={'username': username}).get('Item')
+        item = table.get_item(Key={'username': username}).get('Item')
+        if not item:
+            return None
+
+        s3_key = item.get(MOVIES_S3_KEY_ATTR)
+        if s3_key and include_movies:
+            if not movies_cache_bucket_name:
+                raise RuntimeError("MOVIES_CACHE_BUCKET_NAME is not configured but the cache is offloaded to S3")
+            body = s3.get_object(Bucket=movies_cache_bucket_name, Key=s3_key)["Body"].read()
+            item["movies"] = json.loads(gzip.decompress(body))
+        return item
     except Exception as exc:
-        logger.warning("DynamoDB cache read failed for %s: %s", username, exc)
+        logger.warning("Movie cache read failed for %s: %s", username, exc)
         return None
 
 def _put_cached_item(cache_item: Dict[str, Any]) -> None:
     """
     Best-effort cache write; failures should not break API responses.
+    Movie lists too large for a DynamoDB item are written to S3 instead.
     """
+    username = cache_item.get('username')
     try:
-        table.put_item(Item=cache_item)
+        item = dict(cache_item)
+        movies = item.get("movies") or []
+        item["movie_count"] = len(movies)
+        payload = json.dumps(movies, separators=(",", ":"), default=str).encode("utf-8")
+
+        if len(payload) > S3_OFFLOAD_THRESHOLD_BYTES:
+            if movies_cache_bucket_name:
+                s3_key = _movies_s3_key(username)
+                s3.put_object(
+                    Bucket=movies_cache_bucket_name,
+                    Key=s3_key,
+                    Body=gzip.compress(payload),
+                    ContentType="application/gzip",
+                )
+                item.pop("movies", None)
+                item[MOVIES_S3_KEY_ATTR] = s3_key
+                logger.info("Offloaded %s movies (%s bytes) for %s to S3", len(movies), len(payload), username)
+            else:
+                logger.warning(
+                    "Movie list for %s is %s bytes and MOVIES_CACHE_BUCKET_NAME is not set; "
+                    "the DynamoDB write will fail above 400 KB",
+                    username,
+                    len(payload),
+                )
+
+        table.put_item(Item=item)
     except Exception as exc:
-        logger.warning("DynamoDB cache write failed for %s: %s", cache_item.get('username'), exc)
+        logger.warning("Movie cache write failed for %s: %s", username, exc)
 
 def _delete_cached_item(username: str) -> None:
     """
@@ -463,15 +514,25 @@ def _delete_cached_item(username: str) -> None:
     """
     try:
         table.delete_item(Key={'username': username})
+        if movies_cache_bucket_name:
+            s3.delete_object(Bucket=movies_cache_bucket_name, Key=_movies_s3_key(username))
     except Exception as exc:
-        logger.warning("DynamoDB cache delete failed for %s: %s", username, exc)
+        logger.warning("Movie cache delete failed for %s: %s", username, exc)
 
-def get_cached_movies_state(username: str) -> Dict[str, Any]:
+def get_cached_movies(username: str) -> List[Dict[str, Any]]:
+    """
+    Return the cached movie list for a username (empty if there is no cache).
+    """
+    cached_item = _get_cached_item(username)
+    return (cached_item or {}).get("movies", [])
+
+def get_cached_movies_state(username: str, include_movies: bool = True) -> Dict[str, Any]:
     """
     Return cache metadata for a username without triggering scraping.
+    With include_movies=False the "movies" list is left empty (no S3 read).
     """
     now = int(time.time())
-    cached_item = _get_cached_item(username)
+    cached_item = _get_cached_item(username, include_movies=include_movies)
     if not cached_item:
         return {
             "exists": False,

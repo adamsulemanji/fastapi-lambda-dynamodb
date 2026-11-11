@@ -159,7 +159,7 @@ def create_movie_poster_job_route(response: Response, job: MoviePosterJobRequest
     """
     Create an async movie poster generation job.
     """
-    cache_state = get_cached_movies_state(job.username)
+    cache_state = get_cached_movies_state(job.username, include_movies=False)
     if not cache_state.get("exists", False):
         _queue_movies_job_with_headers(
             response=response,

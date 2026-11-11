@@ -16,15 +16,13 @@ from services.movie_poster_jobs import (
     mark_movie_poster_job_succeeded,
     update_movie_poster_job,
 )
-from services.movies import backfill_movies
+from services.movies import backfill_movies, get_cached_movies
 
 
 logger = logging.getLogger(__name__)
 
-dynamodb = boto3.resource("dynamodb")
 s3 = boto3.client("s3")
 
-movies_table_name = os.environ.get("MOVIES_TABLE_NAME", "movies")
 poster_temp_bucket_name = os.environ.get("MOVIES_POSTER_TEMP_BUCKET_NAME")
 poster_output_bucket_name = os.environ.get("MOVIES_POSTER_OUTPUT_BUCKET_NAME")
 
@@ -46,33 +44,27 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
-def _is_prime(n: int) -> bool:
-    if n < 2:
-        return False
-    if n == 2:
-        return True
-    if n % 2 == 0:
-        return False
-    limit = int(math.sqrt(n))
-    for divisor in range(3, limit + 1, 2):
-        if n % divisor == 0:
-            return False
-    return True
-
-
-def _best_rectangle(total_tiles: int) -> Dict[str, int]:
-    if total_tiles <= 0:
+def _best_grid(available_tiles: int) -> Dict[str, int]:
+    """
+    Pick a poster-shaped grid (close to square in tile counts, so roughly 2:3
+    overall) that uses as many tiles as possible. Some tiles may be left out
+    so the grid is always completely filled, e.g. 214 tiles -> 15x14 (210 used).
+    """
+    if available_tiles <= 0:
         return {"columns": 1, "rows": 1}
 
-    root = int(math.sqrt(total_tiles))
-    for rows in range(root, 0, -1):
-        if total_tiles % rows == 0:
-            columns = total_tiles // rows
-            if columns < rows:
-                columns, rows = rows, columns
-            return {"columns": columns, "rows": rows}
+    best_columns, best_rows = 1, 1
+    for rows in range(1, math.isqrt(available_tiles) + 1):
+        # Allow the grid to be at most about a third wider than it is tall.
+        max_columns = rows + max(1, rows // 3)
+        columns = min(available_tiles // rows, max_columns)
+        if columns < rows:
+            continue
+        # ">=" prefers the squarer grid (more rows) when two grids use the same number of tiles.
+        if columns * rows >= best_columns * best_rows:
+            best_columns, best_rows = columns, rows
 
-    return {"columns": total_tiles, "rows": 1}
+    return {"columns": best_columns, "rows": best_rows}
 
 
 def build_manifest_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -97,9 +89,7 @@ def build_manifest_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any
         if not sync_result.get("success"):
             raise ValueError(sync_result.get("message", "Failed to sync movies before poster generation"))
 
-    movies_table = dynamodb.Table(movies_table_name)
-    movie_item = movies_table.get_item(Key={"username": username}).get("Item", {})
-    movies = movie_item.get("movies", [])
+    movies = get_cached_movies(username)
 
     dedupe = set()
     manifest_movies: List[Dict[str, Any]] = []
@@ -254,8 +244,19 @@ def render_poster_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]
     if not valid_items:
         raise ValueError("No valid posters available to render")
 
+    # Choose a fully filled, poster-shaped grid; drop the oldest movies that don't fit.
+    layout = _best_grid(len(valid_items))
+    columns = layout["columns"]
+    rows = layout["rows"]
+    movie_tiles = columns * rows
+    dropped_tiles = len(valid_items) - movie_tiles
+    blank_tiles = 0
+
+    # source_index follows the cached movie order (newest first), so keep the lowest indexes.
+    kept_items = sorted(valid_items, key=lambda item: _safe_int(item.get("source_index"), 0))[:movie_tiles]
+
     sorted_items = sorted(
-        valid_items,
+        kept_items,
         key=lambda item: (
             float(item.get("h", 0.0)),
             float(item.get("s", 0.0)),
@@ -263,20 +264,6 @@ def render_poster_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]
             _safe_int(item.get("source_index"), 0),
         ),
     )
-
-    movie_tiles = len(sorted_items)
-    requested_tiles = _safe_int(event.get("total_items"), movie_tiles)
-    if requested_tiles < movie_tiles:
-        requested_tiles = movie_tiles
-
-    prime_padding = 1 if _is_prime(requested_tiles) else 0
-    missing_padding = max(0, requested_tiles - movie_tiles)
-    blank_tiles = missing_padding + prime_padding
-    total_tiles = movie_tiles + blank_tiles
-
-    layout = _best_rectangle(total_tiles)
-    columns = layout["columns"]
-    rows = layout["rows"]
 
     canvas = Image.new("RGB", (columns * TILE_WIDTH, rows * TILE_HEIGHT), color=(14, 14, 18))
 
@@ -311,7 +298,7 @@ def render_poster_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]
         blank_tiles=blank_tiles,
         grid_columns=columns,
         grid_rows=rows,
-        progress_message=f"Poster generated with {movie_tiles} posters ({columns}x{rows}, blanks={blank_tiles})",
+        progress_message=f"Poster generated with {movie_tiles} posters ({columns}x{rows}, dropped={dropped_tiles})",
     )
 
     return {
@@ -319,6 +306,7 @@ def render_poster_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]
         "output_key": output_key,
         "result_count": movie_tiles,
         "blank_tiles": blank_tiles,
+        "dropped_tiles": dropped_tiles,
         "grid_columns": columns,
         "grid_rows": rows,
     }
