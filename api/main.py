@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from mangum import Mangum
 from fastapi.middleware.cors import CORSMiddleware
-from routes import meals, movies, base
+from routes import meals, movies, runs, base
 import uvicorn
 import logging
 
@@ -53,6 +53,7 @@ logger.info("Configuring routers")
 
 app.include_router(meals.router, prefix="/meals", tags=["Meals"])
 app.include_router(movies.router, prefix="/movies", tags=["Movies"])
+app.include_router(runs.router, prefix="/runs", tags=["Runs"])
 app.include_router(base.router, tags=["Base"])
 
 

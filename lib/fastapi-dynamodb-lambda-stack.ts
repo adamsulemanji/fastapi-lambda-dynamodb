@@ -13,6 +13,7 @@ import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as sfnTasks from "aws-cdk-lib/aws-stepfunctions-tasks";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { RemovalPolicy } from "aws-cdk-lib";
 import { ApiGatewayDomain } from "aws-cdk-lib/aws-route53-targets";
 
@@ -130,6 +131,43 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // Holds movie lists that are too large for a single DynamoDB item (400 KB);
+    // the movies table keeps the metadata and a pointer to the object.
+    const moviesCacheBucket = new s3.Bucket(this, "MoviesCacheBucket", {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // ========================================================================
+    // Runs (Garmin Connect)
+    // ========================================================================
+    // Cached recent runs for the personal site.
+    const table_runs = new dynamodb.Table(this, "RunsTable", {
+      tableName: "runs",
+      partitionKey: {
+        name: "source",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // Garmin Connect session tokens (JSON). Written by api/scripts/garmin_login.py,
+    // then refreshed and rewritten by the API itself.
+    const garminSecret = new secretsmanager.Secret(this, "GarminTokens", {
+      secretName: "garmin/tokens",
+      description: "Garmin Connect session tokens for the /runs API",
+      secretStringValue: cdk.SecretValue.unsafePlainText("{}"),
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    const runsEnvironment = {
+      RUNS_TABLE_NAME: table_runs.tableName,
+      GARMIN_SECRET_ID: garminSecret.secretName,
+    };
+
     // ========================================================================
     // Cognito User Pool
     // ========================================================================
@@ -233,6 +271,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
           AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
           MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_CACHE_BUCKET_NAME: moviesCacheBucket.bucketName,
           MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
           MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_SCRAPE_QUEUE_URL: moviesScrapeQueue.queueUrl,
@@ -240,6 +279,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           MOVIES_POSTER_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
           MOVIES_POSTER_URL_EXPIRATION_SECONDS: "604800",
+          ...runsEnvironment,
         },
         architecture: lambda.Architecture.X86_64,
       }
@@ -249,10 +289,14 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     fastApiLambda_prod.addToRolePolicy(cognitoPolicy);
     table_prod.grantReadWriteData(fastApiLambda_prod);
     table_movies.grantReadWriteData(fastApiLambda_prod);
+    moviesCacheBucket.grantReadWrite(fastApiLambda_prod);
     table_movies_jobs.grantReadWriteData(fastApiLambda_prod);
     table_movies_poster_jobs.grantReadWriteData(fastApiLambda_prod);
     moviesScrapeQueue.grantSendMessages(fastApiLambda_prod);
     moviesPosterOutputBucket.grantRead(fastApiLambda_prod);
+    table_runs.grantReadWriteData(fastApiLambda_prod);
+    garminSecret.grantRead(fastApiLambda_prod);
+    garminSecret.grantWrite(fastApiLambda_prod);
 
     // API Gateway for FastAPI Lambda - Production
     const api_prod = new apigateway.LambdaRestApi(this, "FastApiGateway", {
@@ -301,6 +345,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           AWS_COGNITO_USER_POOL_ID: userPool.userPoolId,
           AWS_COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
           MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_CACHE_BUCKET_NAME: moviesCacheBucket.bucketName,
           MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
           MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_SCRAPE_QUEUE_URL: moviesScrapeQueue.queueUrl,
@@ -308,6 +353,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           MOVIES_POSTER_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
           MOVIES_POSTER_URL_EXPIRATION_SECONDS: "604800",
+          ...runsEnvironment,
         },
         architecture: lambda.Architecture.X86_64, 
       }
@@ -317,10 +363,14 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     fastApiLambda_dev.addToRolePolicy(cognitoPolicy);
     table_dev.grantReadWriteData(fastApiLambda_dev);
     table_movies.grantReadWriteData(fastApiLambda_dev);
+    moviesCacheBucket.grantReadWrite(fastApiLambda_dev);
     table_movies_jobs.grantReadWriteData(fastApiLambda_dev);
     table_movies_poster_jobs.grantReadWriteData(fastApiLambda_dev);
     moviesScrapeQueue.grantSendMessages(fastApiLambda_dev);
     moviesPosterOutputBucket.grantRead(fastApiLambda_dev);
+    table_runs.grantReadWriteData(fastApiLambda_dev);
+    garminSecret.grantRead(fastApiLambda_dev);
+    garminSecret.grantWrite(fastApiLambda_dev);
 
     // API Gateway for FastAPI Lambda - Development
     const api_dev = new apigateway.LambdaRestApi(this, "FastApiGatewayDev", {
@@ -369,6 +419,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         environment: {
           AWS_REGION_NAME: this.region,
           MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_CACHE_BUCKET_NAME: moviesCacheBucket.bucketName,
           MOVIES_JOBS_TABLE_NAME: table_movies_jobs.tableName,
           MOVIES_JOBS_USERNAME_INDEX: "username-created_at-index",
         },
@@ -384,6 +435,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     );
 
     table_movies.grantReadWriteData(moviesWorkerLambda);
+    moviesCacheBucket.grantReadWrite(moviesWorkerLambda);
     table_movies_jobs.grantReadWriteData(moviesWorkerLambda);
     moviesScrapeQueue.grantConsumeMessages(moviesWorkerLambda);
 
@@ -408,6 +460,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         environment: {
           AWS_REGION_NAME: this.region,
           MOVIES_TABLE_NAME: table_movies.tableName,
+          MOVIES_CACHE_BUCKET_NAME: moviesCacheBucket.bucketName,
           MOVIES_POSTER_JOBS_TABLE_NAME: table_movies_poster_jobs.tableName,
           MOVIES_POSTER_TEMP_BUCKET_NAME: moviesPosterTempBucket.bucketName,
         },
@@ -489,6 +542,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     );
 
     table_movies.grantReadData(posterBuildManifestLambda);
+    moviesCacheBucket.grantRead(posterBuildManifestLambda);
     table_movies_poster_jobs.grantReadWriteData(posterBuildManifestLambda);
     table_movies_poster_jobs.grantReadWriteData(posterProcessItemLambda);
     table_movies_poster_jobs.grantReadWriteData(posterRenderLambda);
@@ -524,7 +578,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
 
     const processPosterMap = new sfn.Map(this, "ProcessPosterMap", {
       itemsPath: sfn.JsonPath.stringAt("$.movies"),
-      resultPath: "$.processed_items",
+      // Results are not needed downstream (the render step lists tiles in S3);
+      // discarding them keeps the state under Step Functions' 256 KB limit.
+      resultPath: sfn.JsonPath.DISCARD,
       itemSelector: {
         "job_id.$": "$.job_id",
         "username.$": "$.username",
@@ -543,7 +599,6 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
         "username.$": "$.username",
         "movie_count.$": "$.movie_count",
         "total_items.$": "$.total_items",
-        "processed_items.$": "$.processed_items",
       }),
       payloadResponseOnly: true,
     });
@@ -701,6 +756,11 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     new cdk.CfnOutput(this, "MoviesPosterJobsTableName", {
       value: table_movies_poster_jobs.tableName,
       description: "DynamoDB table storing poster generation jobs",
+    });
+
+    new cdk.CfnOutput(this, "MoviesCacheBucketName", {
+      value: moviesCacheBucket.bucketName,
+      description: "S3 bucket storing movie lists offloaded from DynamoDB",
     });
 
     new cdk.CfnOutput(this, "MoviesPosterOutputBucketName", {
