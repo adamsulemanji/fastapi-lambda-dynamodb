@@ -1,4 +1,3 @@
-import colorsys
 import io
 import json
 import logging
@@ -43,6 +42,84 @@ def _safe_int(value: Any, default: int) -> int:
         return int(value)
     except Exception:
         return default
+
+
+# --- Colour arrangement -------------------------------------------------------
+ANALYSIS_SIZE = (24, 36)  # tiles are analysed at this size; plenty for colour statistics
+HUE_BINS = 36
+# Posters whose average chroma (saturation x brightness) is below this read as
+# black/white/grey and are grouped separately instead of being placed by hue.
+ACHROMATIC_CHROMA = 0.10
+# Where the rainbow starts: just before pure red, so crimson sits with the reds.
+HUE_START = 0.95
+
+
+def _analyze_tile(tile: Image.Image) -> Dict[str, float]:
+    """
+    Describe a tile by its dominant hue rather than its average colour.
+
+    Averaging all pixels turns most posters into a muddy brown/grey, so instead
+    each pixel votes for its hue weighted by how colourful it is; the strongest
+    hue wins. Also returns overall colourfulness and perceived brightness.
+    """
+    small = tile.resize(ANALYSIS_SIZE, resample=Image.BILINEAR)
+    pixel_count = ANALYSIS_SIZE[0] * ANALYSIS_SIZE[1]
+
+    weights = [0.0] * HUE_BINS
+    cos_sums = [0.0] * HUE_BINS
+    sin_sums = [0.0] * HUE_BINS
+    total_chroma = 0.0
+    for h, s, v in small.convert("HSV").getdata():
+        chroma = (s * v) / 65025.0
+        if chroma <= 0.0:
+            continue
+        angle = h * (2.0 * math.pi / 256.0)
+        hue_bin = h * HUE_BINS // 256
+        weights[hue_bin] += chroma
+        cos_sums[hue_bin] += chroma * math.cos(angle)
+        sin_sums[hue_bin] += chroma * math.sin(angle)
+        total_chroma += chroma
+
+    # Strongest hue: peak of the circularly smoothed histogram, refined to the
+    # weighted mean hue of the peak bin and its neighbours.
+    def smoothed(index: int) -> float:
+        return weights[index - 1] + 2.0 * weights[index] + weights[(index + 1) % HUE_BINS]
+
+    peak = max(range(HUE_BINS), key=smoothed)
+    neighbours = (peak - 1, peak, (peak + 1) % HUE_BINS)
+    hue_angle = math.atan2(sum(sin_sums[i] for i in neighbours), sum(cos_sums[i] for i in neighbours))
+    hue = (hue_angle / (2.0 * math.pi)) % 1.0
+
+    luma = small.convert("L").getdata()
+    return {
+        "hue": hue,
+        "chroma": total_chroma / pixel_count,
+        "brightness": sum(luma) / (255.0 * pixel_count),
+    }
+
+
+def _arrange_tiles(items: List[Dict[str, Any]], columns: int) -> List[Dict[str, Any]]:
+    """
+    Order tiles (row-major) as a rainbow running down the poster, with each row
+    going from dark on the left to light on the right. Black/white/grey posters
+    follow at the bottom, fading from light to dark.
+    """
+    def tie_break(item: Dict[str, Any]) -> int:
+        return _safe_int(item.get("source_index"), 0)
+
+    colourful = [item for item in items if item["chroma"] >= ACHROMATIC_CHROMA]
+    neutral = [item for item in items if item["chroma"] < ACHROMATIC_CHROMA]
+
+    colourful.sort(key=lambda item: ((item["hue"] - HUE_START) % 1.0, tie_break(item)))
+    arranged: List[Dict[str, Any]] = []
+    for start in range(0, len(colourful), columns):
+        row = colourful[start:start + columns]
+        row.sort(key=lambda item: (item["brightness"], tie_break(item)))
+        arranged.extend(row)
+
+    neutral.sort(key=lambda item: (-item["brightness"], tie_break(item)))
+    arranged.extend(neutral)
+    return arranged
 
 
 def _tiles_prefix(job_id: str) -> str:
@@ -256,15 +333,12 @@ def render_poster_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]
         tile_bytes = s3.get_object(Bucket=poster_temp_bucket_name, Key=tile_keys[source_index])["Body"].read()
         with Image.open(io.BytesIO(tile_bytes)) as tile_img:
             tile = tile_img.convert("RGB")
-        r, g, b = tile.resize((1, 1), resample=RESAMPLE).getpixel((0, 0))
-        hue, sat, val = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
-        return {"source_index": source_index, "tile": tile, "color": (hue, sat, val)}
+        return {"source_index": source_index, "tile": tile, **_analyze_tile(tile)}
 
     with ThreadPoolExecutor(max_workers=16) as pool:
         tiles = list(pool.map(load_tile, kept_indexes))
 
-    # Arrange by dominant colour (hue, then saturation, then brightness).
-    tiles.sort(key=lambda item: (item["color"], item["source_index"]))
+    tiles = _arrange_tiles(tiles, columns)
 
     canvas = Image.new("RGB", (columns * TILE_WIDTH, rows * TILE_HEIGHT), color=(14, 14, 18))
 
