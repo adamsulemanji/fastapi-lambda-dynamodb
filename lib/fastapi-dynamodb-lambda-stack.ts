@@ -13,6 +13,7 @@ import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sfn from "aws-cdk-lib/aws-stepfunctions";
 import * as sfnTasks from "aws-cdk-lib/aws-stepfunctions-tasks";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { RemovalPolicy } from "aws-cdk-lib";
 import { ApiGatewayDomain } from "aws-cdk-lib/aws-route53-targets";
 
@@ -140,6 +141,35 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     });
 
     // ========================================================================
+    // Strava
+    // ========================================================================
+    // Cached recent runs, keyed by athlete id.
+    const table_strava = new dynamodb.Table(this, "StravaTable", {
+      tableName: "strava",
+      partitionKey: {
+        name: "athlete_id",
+        type: dynamodb.AttributeType.STRING,
+      },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // JSON: {client_id, client_secret} set by hand; the API writes the OAuth
+    // tokens (access_token, refresh_token, expires_at) into it after /strava/auth.
+    const stravaSecret = new secretsmanager.Secret(this, "StravaCredentials", {
+      secretName: "strava/credentials",
+      description: "Strava API app credentials and OAuth tokens",
+      secretStringValue: cdk.SecretValue.unsafePlainText("{}"),
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    const stravaEnvironment = {
+      STRAVA_TABLE_NAME: table_strava.tableName,
+      STRAVA_SECRET_ID: stravaSecret.secretName,
+      STRAVA_ATHLETE_ID: "109469044",
+    };
+
+    // ========================================================================
     // Cognito User Pool
     // ========================================================================
     const userPool = new cognito.UserPool(this, "UserPool", {
@@ -250,6 +280,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           MOVIES_POSTER_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
           MOVIES_POSTER_URL_EXPIRATION_SECONDS: "604800",
+          ...stravaEnvironment,
         },
         architecture: lambda.Architecture.X86_64,
       }
@@ -264,6 +295,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     table_movies_poster_jobs.grantReadWriteData(fastApiLambda_prod);
     moviesScrapeQueue.grantSendMessages(fastApiLambda_prod);
     moviesPosterOutputBucket.grantRead(fastApiLambda_prod);
+    table_strava.grantReadWriteData(fastApiLambda_prod);
+    stravaSecret.grantRead(fastApiLambda_prod);
+    stravaSecret.grantWrite(fastApiLambda_prod);
 
     // API Gateway for FastAPI Lambda - Production
     const api_prod = new apigateway.LambdaRestApi(this, "FastApiGateway", {
@@ -320,6 +354,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           MOVIES_POSTER_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
           MOVIES_POSTER_URL_EXPIRATION_SECONDS: "604800",
+          ...stravaEnvironment,
         },
         architecture: lambda.Architecture.X86_64, 
       }
@@ -334,6 +369,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     table_movies_poster_jobs.grantReadWriteData(fastApiLambda_dev);
     moviesScrapeQueue.grantSendMessages(fastApiLambda_dev);
     moviesPosterOutputBucket.grantRead(fastApiLambda_dev);
+    table_strava.grantReadWriteData(fastApiLambda_dev);
+    stravaSecret.grantRead(fastApiLambda_dev);
+    stravaSecret.grantWrite(fastApiLambda_dev);
 
     // API Gateway for FastAPI Lambda - Development
     const api_dev = new apigateway.LambdaRestApi(this, "FastApiGatewayDev", {
