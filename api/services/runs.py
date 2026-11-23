@@ -33,9 +33,10 @@ CACHE_TTL_SECONDS = int(os.environ.get("RUNS_CACHE_TTL_SECONDS", "1800"))
 # Trim each end of the route so the map doesn't publish where runs start and
 # finish (e.g. home). Garmin returns the full track.
 PRIVACY_TRIM_METERS = float(os.environ.get("RUNS_PRIVACY_TRIM_METERS", "300"))
-MAX_CACHED_RUNS = 10
+MAX_CACHED_RUNS = 5
 ACTIVITY_PAGE_SIZE = 40
 MAX_ROUTE_POINTS = 600
+MAX_SERIES_POINTS = 160
 # Outdoor running types; treadmill/indoor/virtual have no GPS track.
 RUN_TYPES = {"running", "trail_running", "track_running", "street_running", "ultra_run"}
 
@@ -152,15 +153,92 @@ def _extract_route(details: Dict[str, Any]) -> List[Tuple[float, float]]:
     return decode_polyline(encoded) if isinstance(encoded, str) and encoded else []
 
 
-def _route_for(garmin: Any, activity_id: int) -> List[Tuple[float, float]]:
-    details = garmin.get_activity_details(str(activity_id), maxchart=10, maxpoly=2000)
-    points = _extract_route(details)
-    if not points:
-        try:
-            points = _extract_route(garmin.get_activity_polyline(activity_id))
-        except Exception:
-            logger.info("No polyline endpoint data for %s", activity_id)
-    return points
+def _series(details: Dict[str, Any]) -> Dict[str, List[Optional[float]]]:
+    """
+    Distance-indexed elevation / heart-rate / speed streams for the detail charts.
+    Lat/lng are deliberately not included.
+    """
+    index = {m.get("key"): m.get("metricsIndex") for m in (details or {}).get("metricDescriptors") or []}
+    wanted = {
+        "distance_m": "sumDistance",
+        "elevation_m": "directElevation",
+        "heart_rate": "directHeartRate",
+        "speed_mps": "directSpeed",
+    }
+    if index.get("sumDistance") is None:
+        return {}
+
+    rows = []
+    for row in (details or {}).get("activityDetailMetrics") or []:
+        metrics = row.get("metrics") or []
+
+        def pick(key: str) -> Optional[float]:
+            i = index.get(key)
+            if i is None or i >= len(metrics) or metrics[i] is None:
+                return None
+            return float(metrics[i])
+
+        values = {name: pick(key) for name, key in wanted.items()}
+        if values["distance_m"] is not None:
+            rows.append(values)
+    rows.sort(key=lambda r: r["distance_m"])
+
+    # GPS speed is jumpy; a centred moving average reads as pace, not noise.
+    speeds = [r["speed_mps"] for r in rows]
+    for i, r in enumerate(rows):
+        window = [v for v in speeds[max(0, i - 3): i + 4] if v]
+        r["speed_mps"] = sum(window) / len(window) if window else None
+
+    rows = _downsample(rows, MAX_SERIES_POINTS)
+    return {
+        name: [None if r[name] is None else round(r[name], 2) for r in rows]
+        for name in wanted
+    }
+
+
+def _splits(garmin: Any, activity_id: int) -> List[Dict[str, Any]]:
+    try:
+        laps = (garmin.get_activity_splits(activity_id) or {}).get("lapDTOs") or []
+    except Exception:
+        logger.info("No splits for %s", activity_id)
+        return []
+    return [
+        {
+            "distance_m": round(float(lap.get("distance") or 0), 1),
+            "moving_time_s": round(float(lap.get("movingDuration") or lap.get("duration") or 0), 1),
+            "avg_hr": lap.get("averageHR"),
+            "elevation_gain_m": lap.get("elevationGain"),
+            "elevation_loss_m": lap.get("elevationLoss"),
+        }
+        for lap in laps
+        if (lap.get("distance") or 0) > 50
+    ]
+
+
+def _num(value: Any, digits: int = 1) -> Optional[float]:
+    return None if value is None else round(float(value), digits)
+
+
+def _summary_details(activity: Dict[str, Any]) -> Dict[str, Any]:
+    zones = [activity.get(f"hrTimeInZone_{z}") for z in range(1, 6)]
+    return {
+        "location_name": activity.get("locationName"),
+        "avg_hr": _num(activity.get("averageHR"), 0),
+        "max_hr": _num(activity.get("maxHR"), 0),
+        "calories": _num(activity.get("calories"), 0),
+        "avg_cadence_spm": _num(activity.get("averageRunningCadenceInStepsPerMinute"), 0),
+        "avg_stride_cm": _num(activity.get("avgStrideLength")),
+        "avg_power_w": _num(activity.get("avgPower"), 0),
+        "max_speed_mps": _num(activity.get("maxSpeed"), 2),
+        "elevation_loss_m": _num(activity.get("elevationLoss")),
+        "vo2max": _num(activity.get("vO2MaxValue"), 0),
+        "aerobic_training_effect": _num(activity.get("aerobicTrainingEffect")),
+        "training_effect_label": activity.get("trainingEffectLabel"),
+        "training_load": _num(activity.get("activityTrainingLoad"), 0),
+        "fastest_mile_s": _num(activity.get("fastestSplit_1609"), 0),
+        "steps": activity.get("steps"),
+        "hr_zones_s": [_num(z, 0) or 0 for z in zones] if any(zones) else [],
+    }
 
 
 # --- Activities -------------------------------------------------------------------
@@ -183,10 +261,15 @@ def _to_run(garmin: Any, activity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if type_key not in RUN_TYPES or activity.get("hasPolyline") is False:
         return None
 
-    route = _downsample(
-        trim_route(_route_for(garmin, activity["activityId"]), PRIVACY_TRIM_METERS),
-        MAX_ROUTE_POINTS,
-    )
+    activity_id = activity["activityId"]
+    details = garmin.get_activity_details(str(activity_id), maxchart=1000, maxpoly=2000)
+    points = _extract_route(details)
+    if not points:
+        try:
+            points = _extract_route(garmin.get_activity_polyline(activity_id))
+        except Exception:
+            logger.info("No polyline endpoint data for %s", activity_id)
+    route = _downsample(trim_route(points, PRIVACY_TRIM_METERS), MAX_ROUTE_POINTS)
     if len(route) < 2:
         return None
 
@@ -201,6 +284,11 @@ def _to_run(garmin: Any, activity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "elapsed_time_s": int(round(activity.get("elapsedDuration") or activity.get("duration") or moving)),
         "elevation_gain_m": float(activity.get("elevationGain") or 0),
         "route": [[round(lat, 5), round(lng, 5)] for lat, lng in route],
+        "details": {
+            **_summary_details(activity),
+            "splits": _splits(garmin, activity_id),
+            "series": _series(details),
+        },
     }
 
 

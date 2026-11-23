@@ -14,7 +14,7 @@ router = APIRouter()
 @router.get("/", response_model=List[Run], include_in_schema=False)
 def recent_runs(
     response: Response,
-    limit: int = Query(3, ge=1, le=10, description="Number of most recent runs to return"),
+    limit: int = Query(3, ge=1, le=5, description="Number of most recent runs to return"),
 ):
     """
     Most recent outdoor runs with a GPS route, newest first, from Garmin Connect.
