@@ -12,3 +12,4 @@ python-jose
 aiohttp
 httpx
 Pillow
+garminconnect>=0.3.20

@@ -141,32 +141,31 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     });
 
     // ========================================================================
-    // Strava
+    // Runs (Garmin Connect)
     // ========================================================================
-    // Cached recent runs, keyed by athlete id.
-    const table_strava = new dynamodb.Table(this, "StravaTable", {
-      tableName: "strava",
+    // Cached recent runs for the personal site.
+    const table_runs = new dynamodb.Table(this, "RunsTable", {
+      tableName: "runs",
       partitionKey: {
-        name: "athlete_id",
+        name: "source",
         type: dynamodb.AttributeType.STRING,
       },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-    // JSON: {client_id, client_secret} set by hand; the API writes the OAuth
-    // tokens (access_token, refresh_token, expires_at) into it after /strava/auth.
-    const stravaSecret = new secretsmanager.Secret(this, "StravaCredentials", {
-      secretName: "strava/credentials",
-      description: "Strava API app credentials and OAuth tokens",
+    // Garmin Connect session tokens (JSON). Written by api/scripts/garmin_login.py,
+    // then refreshed and rewritten by the API itself.
+    const garminSecret = new secretsmanager.Secret(this, "GarminTokens", {
+      secretName: "garmin/tokens",
+      description: "Garmin Connect session tokens for the /runs API",
       secretStringValue: cdk.SecretValue.unsafePlainText("{}"),
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-    const stravaEnvironment = {
-      STRAVA_TABLE_NAME: table_strava.tableName,
-      STRAVA_SECRET_ID: stravaSecret.secretName,
-      STRAVA_ATHLETE_ID: "109469044",
+    const runsEnvironment = {
+      RUNS_TABLE_NAME: table_runs.tableName,
+      GARMIN_SECRET_ID: garminSecret.secretName,
     };
 
     // ========================================================================
@@ -280,7 +279,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           MOVIES_POSTER_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
           MOVIES_POSTER_URL_EXPIRATION_SECONDS: "604800",
-          ...stravaEnvironment,
+          ...runsEnvironment,
         },
         architecture: lambda.Architecture.X86_64,
       }
@@ -295,9 +294,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     table_movies_poster_jobs.grantReadWriteData(fastApiLambda_prod);
     moviesScrapeQueue.grantSendMessages(fastApiLambda_prod);
     moviesPosterOutputBucket.grantRead(fastApiLambda_prod);
-    table_strava.grantReadWriteData(fastApiLambda_prod);
-    stravaSecret.grantRead(fastApiLambda_prod);
-    stravaSecret.grantWrite(fastApiLambda_prod);
+    table_runs.grantReadWriteData(fastApiLambda_prod);
+    garminSecret.grantRead(fastApiLambda_prod);
+    garminSecret.grantWrite(fastApiLambda_prod);
 
     // API Gateway for FastAPI Lambda - Production
     const api_prod = new apigateway.LambdaRestApi(this, "FastApiGateway", {
@@ -354,7 +353,7 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
           MOVIES_POSTER_JOBS_USERNAME_INDEX: "username-created_at-index",
           MOVIES_POSTER_OUTPUT_BUCKET_NAME: moviesPosterOutputBucket.bucketName,
           MOVIES_POSTER_URL_EXPIRATION_SECONDS: "604800",
-          ...stravaEnvironment,
+          ...runsEnvironment,
         },
         architecture: lambda.Architecture.X86_64, 
       }
@@ -369,9 +368,9 @@ export class FastapiDynamodbLambdaStack extends cdk.Stack {
     table_movies_poster_jobs.grantReadWriteData(fastApiLambda_dev);
     moviesScrapeQueue.grantSendMessages(fastApiLambda_dev);
     moviesPosterOutputBucket.grantRead(fastApiLambda_dev);
-    table_strava.grantReadWriteData(fastApiLambda_dev);
-    stravaSecret.grantRead(fastApiLambda_dev);
-    stravaSecret.grantWrite(fastApiLambda_dev);
+    table_runs.grantReadWriteData(fastApiLambda_dev);
+    garminSecret.grantRead(fastApiLambda_dev);
+    garminSecret.grantWrite(fastApiLambda_dev);
 
     // API Gateway for FastAPI Lambda - Development
     const api_dev = new apigateway.LambdaRestApi(this, "FastApiGatewayDev", {
